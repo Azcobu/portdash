@@ -2,7 +2,7 @@ from dataclasses import dataclass
 import csv
 import plotly.express as px
 import pandas as pd
-import yfinance as yf
+from yahooquery import Ticker as Ticker
 
 '''
 to do:
@@ -18,9 +18,13 @@ experiment with yfinance retrieval limits/throttling - 1-2K requests/hr for IP a
 class Holding:
     name: str
     ticker: str
-    weight: float
-    sector: str
-    country: str
+    units: int = 0
+    weight: float = 0
+    sector: str = None
+    country: str = None
+    issuer: str = None
+    daily_change: float = 0
+    holdings_file: str = None
 
 def render_treeview(etfs, names, weights):
 
@@ -67,11 +71,21 @@ def get_daily_changes(combined):
 
 def get_portfolio_data():
     # returns a dict with current portfolio holdings and weights from a csv with following format:
-    # Name,Units,Issuer,HoldingsFile
+    # Ticker,Units,TotalPaid,Issuer,HoldingsFile
+    portfolio = []
 
-    with open(r'd:\tmp\holdings.csv', 'r', encoding='utf-8') as infile:
+    with open(r'd:\tmp\portfolio.csv', 'r', encoding='utf-8') as infile:
         reader = csv.DictReader(infile)
-        return {row['Name']: float(row['Units']) for row in reader}
+        for row in reader:
+            portfolio.append(Holding(
+                name=row['Ticker'], # double up, use ticker as name
+                ticker=row['Ticker'],
+                units=int(row['Units']),
+                weight=0,
+                issuer=row['Issuer'],
+                holdings_file=row['HoldingsFile']
+            ))
+    return portfolio
 
 def normalize_ticker(raw_ticker, country_code=None, source='vanguard'):
     """
@@ -186,13 +200,50 @@ def extract_financial_data():
 
     return etfs, names, weights
 
+def get_yahoo_data(tickers):
+    # Create Ticker object
+    t = Ticker(tickers)
+
+    # Fetch the 'price' summary data (current quote)
+    quotes = t.price
+
+    # Get both current price and daily % change
+    prices = {
+        symbol: {
+            'price': data.get('regularMarketPrice'),
+            'change_pct': data.get('regularMarketChangePercent')
+        }
+        for symbol, data in quotes.items()
+        if isinstance(data, dict)
+    }
+
+    return prices
 
 def main():
     # https://www.betashares.com.au/files/csv/A200_Portfolio_Holdings.csv
     # https://www.betashares.com.au/files/csv/BGBL_Portfolio_Holdings.csv
 
-    etfs, names, weights = extract_financial_data()
-    render_treeview(etfs, names, weights)
+    #etfs, names, weights = extract_financial_data()
+    #render_treeview(etfs, names, weights)
+
+    tickers = ['A200.AX', 'BGBL.AX', 'VGE.AX', 'VISM.AX']
+
+    port = get_portfolio_data()
+    prices = get_yahoo_data(tickers)
+
+    for p in port:
+        p.weight = round(prices[p.ticker]['price'] * p.units, 2)
+        p.daily_change = round(prices[p.ticker]['change_pct'] * 100, 2)
+
+    print(port)
+    print(sum(p.weight for p in port))
+    
+
+'''
+    results = run_yahooquery(tickers)
+    for symbol, change in results.items():
+        print(f'{symbol}: {change}%')
+'''
 
 if __name__ == '__main__':
     main()
