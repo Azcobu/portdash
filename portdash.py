@@ -1,7 +1,8 @@
+from dataclasses import dataclass
+import csv
 import plotly.express as px
 import pandas as pd
 import yfinance as yf
-import csv
 
 '''
 to do:
@@ -12,6 +13,14 @@ central labels?
 at a glance summary page
 experiment with yfinance retrieval limits/throttling - 1-2K requests/hr for IP auth. VPN likely to cause issues here?
 '''
+
+@dataclass
+class Holding:
+    name: str
+    ticker: str
+    weight: float
+    sector: str
+    country: str
 
 def render_treeview(etfs, names, weights):
 
@@ -54,14 +63,72 @@ def get_daily_changes(combined):
     combined.sort(key=lambda x: x[2], reverse=True)
     top = combined[:100]
 
-
     etfs, names, weights = zip(*combined)
 
 def get_portfolio_data():
-    # returns a dict with current portfolio holdings and weights
-    pass
+    # returns a dict with current portfolio holdings and weights from a csv with following format:
+    # Name,Units,Issuer,HoldingsFile
 
-def extract_financial_data(csv_files):
+    with open(r'd:\tmp\holdings.csv', 'r', encoding='utf-8') as infile:
+        reader = csv.DictReader(infile)
+        return {row['Name']: float(row['Units']) for row in reader}
+
+def normalize_ticker(raw_ticker, country_code=None, source='vanguard'):
+    """
+    Convert a raw ticker from Vanguard or Betashares into a valid Yahoo Finance ticker.
+
+    :param raw_ticker: e.g. '2330', 'BRK/B UN', 'NESN VX'
+    :param country_code: e.g. 'TW', 'US', 'JP' (from Vanguard CSV)
+    :param source: 'vanguard' or 'betashares'
+    :return: normalized ticker (e.g. '2330.TW', 'BRK-B', 'NESN.SW')
+    """
+    raw_ticker = raw_ticker.strip()
+
+    # Bloomberg-style exchange codes (Betashares)
+    bloomberg_to_yahoo = {
+        'AU': '.AX',   # Australia (ASX)
+        'AT': '.AX',   # Australia (ASX)
+        'UW': '',      # NASDAQ
+        'UN': '',      # NYSE
+        'LN': '.L',    # London
+        'FP': '.PA',   # Paris
+        'GR': '.DE',   # Xetra
+        'GY': '.DE',   # Frankfurt
+        'VX': '.SW',   # Switzerland
+        'SE': '.SW',   # Switzerland
+        'HK': '.HK',   # Hong Kong
+        'JP': '.T',    # Tokyo
+        'KS': '.KS',   # South Korea
+        'TW': '.TW',   # Taiwan
+        'CN': '.SS',   # Shanghai
+        'TI': '.MI',   # Italy (Borsa Italiana)
+        'CT': '.TO',   # Canada?
+    }
+
+    if source == 'betashares':
+        # Handle things like 'BRK/B UN'
+        raw_ticker = raw_ticker.replace('/', '-')
+        parts = raw_ticker.split()
+        if len(parts) == 2:
+            symbol, exch = parts
+            suffix = bloomberg_to_yahoo.get(exch.upper(), '')
+            return symbol + suffix
+        else:
+            return raw_ticker
+
+    elif source == 'vanguard':
+        # e.g. 2330 (TW), or AAPL (US)
+        if raw_ticker.isdigit() and country_code:
+            suffix = bloomberg_to_yahoo.get(country_code.upper(), '')
+            return raw_ticker + suffix
+        elif '/' in raw_ticker:
+            return raw_ticker.replace('/', '-')
+        else:
+            return raw_ticker
+
+    return raw_ticker
+
+def extract_financial_data():
     '''
     betashares header:
     Ticker,Name,Asset Class,Sector,Country,Currency,Weight (%),Shares/Units (#),Market Value (AUD),Notional Value (AUD)
@@ -98,6 +165,7 @@ def extract_financial_data(csv_files):
                                 currnames.append(row['Name'])
                                 wght = float(row['Weight (%)']) / 100 * etf_weights[etf_name]
                                 weights.append(wght)
+                                ticker = normalize_ticker(row['Ticker'], None, source='betashares')
                     except Exception as err:
                         print(f'{row} - {err}')
             else:
@@ -123,7 +191,7 @@ def main():
     # https://www.betashares.com.au/files/csv/A200_Portfolio_Holdings.csv
     # https://www.betashares.com.au/files/csv/BGBL_Portfolio_Holdings.csv
 
-    etfs, names, weights = extract_financial_data(csv_files)
+    etfs, names, weights = extract_financial_data()
     render_treeview(etfs, names, weights)
 
 if __name__ == '__main__':
