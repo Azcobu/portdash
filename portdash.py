@@ -85,6 +85,8 @@ def get_portfolio_data():
                 issuer=row['Issuer'],
                 holdings_file=row['HoldingsFile']
             ))
+
+
     return portfolio
 
 def normalize_ticker(raw_ticker, country_code=None, source='vanguard'):
@@ -142,7 +144,7 @@ def normalize_ticker(raw_ticker, country_code=None, source='vanguard'):
 
     return raw_ticker
 
-def extract_financial_data():
+def extract_financial_data(portfolio):
     '''
     betashares header:
     Ticker,Name,Asset Class,Sector,Country,Currency,Weight (%),Shares/Units (#),Market Value (AUD),Notional Value (AUD)
@@ -150,34 +152,32 @@ def extract_financial_data():
     "Holding Name",Ticker,Sector,"Country code","% of net assets","Market value (AUD)","# of units"
     '''
     #etd, stock name, weight, sector, country
-    etf_weights = get_portfolio_data()
     all_weights = []
     etfs, names, weights, changes = [], [], [], []
 
-    file_configs = [
-        # Format: (infile, ETF name, skiprows, source)
-        [r'D:\Downloads\A200_Portfolio_Holdings.csv', 'A200', 6, 'betashares'],
-        [r'D:\Downloads\BGBL_Portfolio_Holdings.csv', 'BGBL', 6, 'betashares'],
-        [r'd:\Downloads\VGE Holding details_5_16_2025.csv', 'VGE', 3, 'vanguard'],
-        [r'D:\Downloads\VISM Holding details_5_16_2025.csv', 'VISM', 3, 'vanguard']
-    ]
+    # this is the number of lines to skip at the top of each file
+    skiprows = {'betashares': 6, 'vanguard': 3}
 
-    for infile, etf_name, skiprows, source in file_configs:
+    # generate relative weightings for items in the portfolio
+    total = sum([p.weight for p in portfolio])
+    port_weights = {p.ticker: (p.weight / total) for p in portfolio if p.weight > 0}
 
-        with open(infile, 'r', encoding='utf-8') as infile:
-            for _ in range(skiprows):
+    # 
+    for p in portfolio:
+        with open(p.holdings_file, 'r', encoding='utf-8') as infile:
+            for _ in range(skiprows[p.issuer]):
                 next(infile)
             
             reader = csv.DictReader(infile)
             currnames = []
 
-            if source == 'betashares':
+            if p.issuer == 'betashares':
                 for row in reader:
                     try:
                         if row['Name'] and row['Weight (%)']:
                             if row['Name'] != 'AUD - AUSTRALIA DOLLAR':
                                 currnames.append(row['Name'])
-                                wght = float(row['Weight (%)']) / 100 * etf_weights[etf_name]
+                                wght = float(row['Weight (%)']) / 100 * port_weights[p.name]
                                 weights.append(wght)
                                 ticker = normalize_ticker(row['Ticker'], None, source='betashares')
                     except Exception as err:
@@ -187,7 +187,7 @@ def extract_financial_data():
                     try:
                         if row['Holding Name'] and row['% of net assets']:
                             currnames.append(row['Holding Name'])
-                            wght = float(row['% of net assets'][:-1]) / 100 * etf_weights[etf_name]
+                            wght = float(row['% of net assets'][:-1]) / 100 * port_weights[p.name]
                             weights.append(wght)
                     except Exception as err:
                         print(f'{row} - {err}')
@@ -223,20 +223,18 @@ def main():
     # https://www.betashares.com.au/files/csv/A200_Portfolio_Holdings.csv
     # https://www.betashares.com.au/files/csv/BGBL_Portfolio_Holdings.csv
 
-    #etfs, names, weights = extract_financial_data()
-    #render_treeview(etfs, names, weights)
+    portfolio = get_portfolio_data()
+    prices = get_yahoo_data([p.ticker for p in portfolio])
 
-    tickers = ['A200.AX', 'BGBL.AX', 'VGE.AX', 'VISM.AX']
-
-    port = get_portfolio_data()
-    prices = get_yahoo_data(tickers)
-
-    for p in port:
+    for p in portfolio:
         p.weight = round(prices[p.ticker]['price'] * p.units, 2)
         p.daily_change = round(prices[p.ticker]['change_pct'] * 100, 2)
 
-    print(port)
-    print(sum(p.weight for p in port))
+    print(portfolio)
+    print(sum(p.weight for p in portfolio))
+
+    extract_financial_data(portfolio)
+    #render_treeview(etfs, names, weights)
     
 
 '''
