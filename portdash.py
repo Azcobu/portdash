@@ -86,7 +86,6 @@ def get_portfolio_data():
                 holdings_file=row['HoldingsFile']
             ))
 
-
     return portfolio
 
 def normalize_ticker(raw_ticker, country_code=None, source='vanguard'):
