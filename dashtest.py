@@ -1,5 +1,6 @@
 import csv
 from dataclasses import dataclass
+from datetime import datetime
 import dash
 from dash import html, dcc, Output, Input
 import plotly.graph_objs as go
@@ -21,8 +22,7 @@ class Holding:
 
 # ETF data
 portfolio = []
-
-summary_data = Holding(ticker="Total")
+summary_data = Holding(ticker="Total...")
 
 def load_portfolio():
     # returns a dict with current portfolio holdings and weights from a csv with following format:
@@ -41,22 +41,23 @@ def load_portfolio():
 
 def format_change(pct, val):
     sign = "▲" if val > 0 else "▼" if val < 0 else ""
-    color = "green" if val > 0 else "red" if val < 0 else "white"
-    text = f"{sign}{pct:.2f}% ({sign}${val:,.2f})"
+    color = "springgreen" if val > 0 else "tomato" if val < 0 else "white"
+    symbol = '+' if val > 0 else '-' if val < 0 else ''
+    text = f"{sign} {pct:.2f}% ({symbol}${val:,.2f})"
     return html.Span(text, style={"color": color})
 
 def generate_etf_row(etf):
     return html.Div(
         className="etf-row",
         children=[
-            html.Div(etf.ticker + ':', className="etf-name"),
+            html.Div(etf.ticker[:-3] + ':', className="etf-name"),
             html.Div(format_change(etf.daily_change_pct, etf.daily_change_val), className="etf-daily"),
             html.Div(format_change(etf.total_change_pct, etf.total_change_val), className="etf-total"),
         ],
     )
 
 app.layout = html.Div(
-    style={"backgroundColor": "#111", "color": "#DDD", "padding": "2rem", "fontFamily": "Segoe"},
+    style={"backgroundColor": "#111", "color": "#DDD", "padding": "2rem", "fontFamily": "Tahoma"},
     children=[
         dcc.Interval(id="startup-trigger", interval=1*1000, n_intervals=0, max_intervals=1),
         html.Div(
@@ -97,20 +98,21 @@ app.layout = html.Div(
                 ),
             ],
         ),
-
+        html.Div(id="status-line", style={"color": "#ccc", "marginTop": "1rem"}),
         html.Button("Refresh", id="refresh-button", style={"marginTop": "2rem", "padding": "0.5rem 1rem", "fontSize": "1rem"})
     ],
 )
 
 @app.callback(
+    Output("status-line", "children"),
     Output("etf-container", "children"),
     Input("refresh-button", "n_clicks"),
     Input("startup-trigger", "n_intervals"),
     prevent_initial_call=True
 )
-
 def refresh_data(n, n_intervals=None):
-    print('Retrieving price data...', end='', flush=True)
+    #print('Retrieving price data...', end='', flush=True)
+    status_text = 'Retrieving price data...'
     curr_prices = get_yahoo_data([etf.ticker for etf in portfolio])
     print('done.')
 
@@ -128,21 +130,17 @@ def refresh_data(n, n_intervals=None):
     overall_total_value = sum([etf.units * curr_prices[etf.ticker]["price"] for etf in portfolio])
     
     summary_data.daily_change_pct = (summary_data.daily_change_val / overall_total_value) * 100
-    #summary_data.total_change_pct = (summary_data.total_change_val / overall_total_value) * 100
     summary_data.total_change_pct = (summary_data.total_change_val / overall_total_paid) * 100
 
+    time_str = datetime.now().strftime("%H:%M:%S")
+    status_text = f"Last refreshed at {time_str}."
 
-    return [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
-
+    return  status_text, [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
 
 def get_yahoo_data(tickers):
-    # Create Ticker object
     t = Ticker(tickers)
-
-    # Fetch the 'price' summary data (current quote)
     quotes = t.price
 
-    # Get both current price and daily % change
     prices = {
         symbol: {
             'price': data.get('regularMarketPrice'),
@@ -155,7 +153,6 @@ def get_yahoo_data(tickers):
 
     return prices
 
-# Additional styles (inline or move to external CSS if preferred)
 app.index_string = app.index_string.replace(
     '</head>',
     '''
@@ -182,7 +179,7 @@ app.index_string = app.index_string.replace(
 
 # init
 load_portfolio()
-refresh_data(None)
+#refresh_data(None)
 
 if __name__ == "__main__":
     app.run(debug=False, port=8050)
