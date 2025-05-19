@@ -2,7 +2,7 @@ import csv
 from dataclasses import dataclass
 from datetime import datetime
 import dash
-from dash import html, dcc, Output, Input
+from dash import html, dcc, Output, Input, State
 import plotly.graph_objs as go
 from yahooquery import Ticker as Ticker
 
@@ -13,6 +13,7 @@ class Holding:
     ticker: str
     units: int = 0
     total_paid: float = 0
+    current_value: float = 0
     weight: float = 0
     issuer: str = None
     daily_change_pct: float = 0
@@ -45,6 +46,21 @@ def format_change(pct, val):
     symbol = '+' if val > 0 else '-' if val < 0 else ''
     text = f"{sign} {pct:.2f}% ({symbol}${val:,.2f})"
     return html.Span(text, style={"color": color})
+
+def generate_etf_header():
+    return html.Div(
+        className="etf-row",
+        children=[
+            html.Div("Ticker", style={"fontWeight": "bold"}),
+            html.Div("Daily", style={"fontWeight": "bold"}),
+            html.Div("Total", style={"fontWeight": "bold"})
+        ],
+        style={
+            "justifyContent": "space-between",
+            "borderBottom": "2px solid #ccc",
+            "color": "#ccc"
+        }
+    )
 
 def generate_etf_row(etf):
     return html.Div(
@@ -79,36 +95,43 @@ app.layout = html.Div(
                     ] + [generate_etf_row(summary_data)]
                 ),
 
-                # Right column (placeholder for future graph)
+                # Right column
                 html.Div(
                     style={"flex": "1"},
                     children=[
-                        dcc.Graph(
-                            figure=go.Figure(
-                                data=[go.Bar(x=["A200", "BGBL", "VISM", "VGE"], y=[10, 20, 5, 7])],
-                                layout=go.Layout(
-                                    plot_bgcolor="#222",
-                                    paper_bgcolor="#222",
-                                    font=dict(color="#DDD"),
-                                    title="Mock Graph",
-                                ),
-                            )
-                        )
+                        dcc.Dropdown(
+                            id="graph-selector",
+                            placeholder="Select a graph type...",
+                            options=[
+                                {"label": "Daily % Impact by ETF", "value": "impact"},
+                                {"label": "Total Value Over Time", "value": "history"},
+                                {"label": "Total $ Impact by ETF", "value": "value_impact"},
+                            ],
+                            #value="impact",
+                            clearable=False,
+                            style={"backgroundColor": "#222", "color": "#ccc", "marginBottom": "1rem"}
+                        ),
+                        dcc.Graph(id="etf-graph", style={"backgroundColor": "#222", "color": "#ccc"})
                     ],
                 ),
             ],
         ),
-        html.Div(id="status-line", style={"color": "#ccc", "marginTop": "1rem"}),
-        html.Button("Refresh", id="refresh-button", style={"marginTop": "2rem", "padding": "0.5rem 1rem", "fontSize": "1rem"})
+        html.Div(
+            [
+                html.Button("Refresh", id="refresh-button", style={"padding": "0.5rem 1rem", "fontSize": "1rem"}),
+                html.Div(id="status-line", style={"color": "#ccc", "alignSelf": "center"})
+            ],
+            style={"display": "flex", "alignItems": "center", "gap": "1rem", "marginBottom": "1rem"}
+        )
     ],
 )
 
 @app.callback(
-    Output("status-line", "children"),
+    [Output("status-line", "children"),
     Output("etf-container", "children"),
-    Input("refresh-button", "n_clicks"),
-    Input("startup-trigger", "n_intervals"),
-    prevent_initial_call=True
+    Output("etf-graph", "figure")], 
+    [Input("refresh-button", "n_clicks"),
+    Input("startup-trigger", "n_intervals")],
 )
 def refresh_data(n, n_intervals=None):
     #print('Retrieving price data...', end='', flush=True)
@@ -119,23 +142,111 @@ def refresh_data(n, n_intervals=None):
     for etf in portfolio:
         etf.daily_change_pct = curr_prices[etf.ticker]["daily_change_pct"] * 100
         etf.daily_change_val = etf.units * (curr_prices[etf.ticker]["price"] - curr_prices[etf.ticker]['yesterday_price'])
-        current_value = curr_prices[etf.ticker]["price"] * etf.units
-        etf.total_change_pct = (current_value - etf.total_paid) / etf.total_paid * 100
-        etf.total_change_val = current_value - etf.total_paid
+        etf.current_value = curr_prices[etf.ticker]["price"] * etf.units
+        etf.total_change_pct = (etf.current_value - etf.total_paid) / etf.total_paid * 100
+        etf.total_change_val = etf.current_value - etf.total_paid
 
     summary_data.daily_change_val = sum(etf.daily_change_val for etf in portfolio) 
     summary_data.total_change_val = sum(etf.total_change_val for etf in portfolio)
     
     overall_total_paid = sum([etf.total_paid for etf in portfolio])
-    overall_total_value = sum([etf.units * curr_prices[etf.ticker]["price"] for etf in portfolio])
+    overall_total_value = sum([etf.current_value for etf in portfolio])
+
+    for etf in portfolio:
+        etf.weight = (etf.current_value / overall_total_value)
     
     summary_data.daily_change_pct = (summary_data.daily_change_val / overall_total_value) * 100
     summary_data.total_change_pct = (summary_data.total_change_val / overall_total_paid) * 100
 
-    time_str = datetime.now().strftime("%H:%M:%S")
+    # Update status line
+    time_str = datetime.now().strftime("%I:%M:%S %p")
+    if time_str[0] == '0':
+        time_str = time_str[1:]  # Remove leading zero
     status_text = f"Last refreshed at {time_str}."
 
-    return  status_text, [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
+    # Build bar chart of weighted impact
+    tickers = [etf.ticker for etf in portfolio]
+    impacts = [etf.daily_change_pct * etf.weight for etf in portfolio]  # in %
+    colors = ["green" if val > 0 else "red" if val < 0 else "white" for val in impacts]
+    labels = [f"{val:+.2f}%" for val in impacts]
+
+    figure = {
+        "data": [
+            {
+                "x": tickers,
+                "y": impacts,
+                "type": "bar",
+                "text": labels,
+                "textposition": "auto",
+                "marker": {"color": colors},
+            }
+        ],
+        "layout": {
+            "plot_bgcolor": "#222",
+            "paper_bgcolor": "#222",
+            "font": {"color": "#ccc"},
+            "title": {"text": "Daily Portfolio Impact by ETF", "font": {"size": 20}},
+            "yaxis": {"title": "Impact (%)"},
+        },
+    }
+    
+    #figure = update_graph()
+    #figure = make_impact_graph()
+
+    etf_boxes = [generate_etf_header()] + [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
+    return status_text, etf_boxes, figure
+
+def make_impact_graph():
+    # Build bar chart of weighted impact
+    tickers = [etf.ticker for etf in portfolio]
+    impacts = [etf.daily_change_pct * etf.weight for etf in portfolio]  # in %
+    colors = ["green" if val > 0 else "red" if val < 0 else "white" for val in impacts]
+    labels = [f"{val:+.2f}%" for val in impacts]
+
+    figure = {
+        "data": [
+            {
+                "x": tickers,
+                "y": impacts,
+                "type": "bar",
+                "text": labels,
+                "textposition": "auto",
+                "marker": {"color": colors},
+            }
+        ],
+        "layout": {
+            "plot_bgcolor": "#222",
+            "paper_bgcolor": "#222",
+            "font": {"color": "#ccc"},
+            "title": {"text": "Daily Portfolio Impact by ETF", "font": {"size": 20}},
+            "yaxis": {"title": "Impact (%)"},
+        },
+    }
+    return figure
+'''
+@app.callback(
+    Output("etf-graph", "figure"),
+    [Input("graph-selector", "value")]
+)
+def update_graph(graph_mode):
+    print('graph type changed')
+    if graph_mode is None:
+        graph_mode = "impact"  # Fallback default
+    
+    # Example response (replace with your real graph logic)
+    if graph_mode == "impact":
+        fig = make_impact_graph()
+    elif graph_mode == "history":
+        print('history')
+        #fig = make_history_graph()
+    elif graph_mode == "value_impact":
+        print('value impact')
+        #fig = make_value_impact_graph()
+    else:
+        fig = go.Figure()  # blank graph fallback
+    
+    return fig
+'''
 
 def get_yahoo_data(tickers):
     t = Ticker(tickers)
