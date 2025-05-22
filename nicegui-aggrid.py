@@ -27,6 +27,8 @@ def calc_table_data():
     row_data = []
     for p in portfolio:
         p_dict = asdict(p)
+        p_dict['daily_change_pct'] = p.daily_change_pct
+        p_dict['daily_change_dollars'] = p.daily_change_dollars
         p_dict['daily_display'] = format_change(p.daily_change_pct, p.daily_change_dollars)
         p_dict['total_display'] = format_change(p.total_change_pct, p.total_change_dollars)
         row_data.append(p_dict)
@@ -44,6 +46,7 @@ def get_total_row(data: list[Holding]) -> dict:
         'total_paid': sum(h.total_paid for h in data),
         'current_value': sum(h.current_value for h in data),
         'weight': sum(h.weight for h in data),
+        'daily_display': 'UNDEFINED',
         'daily_change_pct': sum(h.daily_change_pct for h in data),
         'daily_change_dollars': sum(h.daily_change_dollars for h in data),
         'total_change_pct': sum(h.total_change_pct for h in data),
@@ -66,6 +69,17 @@ ui.add_head_html('''
 </style>
 ''')
 
+''' formatting example for different coloure odd and even rows.
+.ag-theme-balham-dark .ag-row-odd {
+    background-color: rgb(238, 241, 238);
+    border-radius: 10px;
+}
+.ag-theme-balham-dark .ag-row-even {
+    background-color: white;
+    border-radius: 10px;
+}
+'''
+
 with ui.column().classes('items-start p-4 w-1/2'):  # LEFT-align contents to avoid full stretch
     ui.label('Compact Grid:')
     
@@ -74,14 +88,14 @@ with ui.column().classes('items-start p-4 w-1/2'):  # LEFT-align contents to avo
     grid = ui.aggrid({
             'columnDefs': [
                 {'headerName': 'Ticker', 'field': 'ticker', 'width': 50},
-                {'field': 'daily_change_pct', 'hide': True, 'sortable': True},
-                {'headerName': 'Daily', 'field': 'daily_display', 'width': 100, 'sortable': False,
-                 'cellClassRules': {
-                    'text-green-500': 'x > 0',
-                    'text-red-500': 'x < 0',
-                    'text-white': 'x === 0',
+                {'headerName': 'Daily', 'field': 'daily_change_pct', 'width': 100, 'sortable': True,
+                  'valueFormatter': "data.daily_display",
+                  'cellClassRules': {
+                     "text-green-500": "x > 0",
+                     "text-red-500": "x < 0",
+                     "text-white": "x === 0",
+                     }
                 },
-                'valueGetter': 'data.daily_display',},
                 {'headerName': 'Total', 'field': 'total_display', 'width': 100,
                  'cellClassRules': {
                     'text-green-500': 'x > 0',
