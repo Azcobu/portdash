@@ -2,7 +2,7 @@ import csv
 from dataclasses import dataclass
 from datetime import datetime
 import dash
-from dash import html, dcc, Output, Input, State
+from dash import html, dcc, Output, Input, callback_context
 import plotly.graph_objs as go
 from yahooquery import Ticker as Ticker
 
@@ -91,8 +91,7 @@ app.layout = html.Div(
                         "minWidth": "500px"
                     },
                     children=[
-                        generate_etf_row(etf) for etf in portfolio
-                    ] + [generate_etf_row(summary_data)]
+                        generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
                 ),
 
                 # Right column
@@ -103,11 +102,11 @@ app.layout = html.Div(
                             id="graph-selector",
                             placeholder="Select a graph type...",
                             options=[
-                                {"label": "Daily % Impact by ETF", "value": "impact"},
+                                {"label": "Daily % Impact by ETF", "value": "daily-impact"},
                                 {"label": "Total Value Over Time", "value": "history"},
                                 {"label": "Total $ Impact by ETF", "value": "value_impact"},
                             ],
-                            #value="impact",
+                            value="daily-impact",
                             clearable=False,
                             style={"backgroundColor": "#222", "color": "#ccc", "marginBottom": "1rem"}
                         ),
@@ -126,6 +125,7 @@ app.layout = html.Div(
     ],
 )
 
+'''
 @app.callback(
     [Output("status-line", "children"),
     Output("etf-container", "children"),
@@ -195,6 +195,78 @@ def refresh_data(n, n_intervals=None):
 
     etf_boxes = [generate_etf_header()] + [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
     return status_text, etf_boxes, figure
+'''
+
+def fetch_etf_data():
+    print('Updating ETF data.')
+    curr_prices = get_yahoo_data([etf.ticker for etf in portfolio])
+
+    for etf in portfolio:
+        etf.daily_change_pct = curr_prices[etf.ticker]["daily_change_pct"] * 100
+        etf.daily_change_val = etf.units * (curr_prices[etf.ticker]["price"] - curr_prices[etf.ticker]['yesterday_price'])
+        etf.current_value = curr_prices[etf.ticker]["price"] * etf.units
+        etf.total_change_pct = (etf.current_value - etf.total_paid) / etf.total_paid * 100
+        etf.total_change_val = etf.current_value - etf.total_paid
+
+    summary_data.daily_change_val = sum(etf.daily_change_val for etf in portfolio) 
+    summary_data.total_change_val = sum(etf.total_change_val for etf in portfolio)
+    
+    overall_total_paid = sum([etf.total_paid for etf in portfolio])
+    overall_total_value = sum([etf.current_value for etf in portfolio])
+
+    for etf in portfolio:
+        etf.weight = (etf.current_value / overall_total_value)
+    
+    summary_data.daily_change_pct = (summary_data.daily_change_val / overall_total_value) * 100
+    summary_data.total_change_pct = (summary_data.total_change_val / overall_total_paid) * 100
+
+
+@app.callback(
+    Output("status-line", "children"),
+    Output("etf-container", "children"),
+    Output("etf-graph", "figure"),
+    Input("refresh-button", "n_clicks"),
+    Input("startup-trigger", "n_intervals"),
+    Input("graph-selector", "value"),
+)
+def unified_callback(n_clicks, n_intervals, graph_mode):
+    triggered = dash.callback_context.triggered
+    if not triggered:
+        trigger_id = None
+    else:
+        trigger_id = triggered[0]["prop_id"].split(".")[0]
+
+    status = dash.no_update
+    container = dash.no_update
+    figure = dash.no_update
+
+    # Handle refresh or startup (initial data fetch)
+    if trigger_id in ["refresh-button", "startup-trigger"]:
+        fetch_etf_data()
+        print(f"Refreshed via {trigger_id}")
+
+        # Only update the graph if current mode is 'daily-impact'
+        if graph_mode == "daily-impact":
+            figure = make_impact_graph()
+
+    elif trigger_id == "graph-selector":
+        # Don’t refetch data — just render new graph mode
+        if graph_mode == "daily-impact":
+            figure = make_impact_graph()
+        elif graph_mode == "cumulative":
+            figure = make_cumulative_graph()
+        elif graph_mode == "value-over-time":
+            figure = make_impact_graph()
+        # add other graph modes here
+
+    # Update status line
+    time_str = datetime.now().strftime("%I:%M:%S %p")
+    if time_str[0] == '0':
+        time_str = time_str[1:]  # Remove leading zero
+    status_text = f"Last refreshed at {time_str}."
+
+    etf_boxes = [generate_etf_header()] + [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
+    return status_text, etf_boxes, figure
 
 def make_impact_graph():
     # Build bar chart of weighted impact
@@ -223,30 +295,6 @@ def make_impact_graph():
         },
     }
     return figure
-'''
-@app.callback(
-    Output("etf-graph", "figure"),
-    [Input("graph-selector", "value")]
-)
-def update_graph(graph_mode):
-    print('graph type changed')
-    if graph_mode is None:
-        graph_mode = "impact"  # Fallback default
-    
-    # Example response (replace with your real graph logic)
-    if graph_mode == "impact":
-        fig = make_impact_graph()
-    elif graph_mode == "history":
-        print('history')
-        #fig = make_history_graph()
-    elif graph_mode == "value_impact":
-        print('value impact')
-        #fig = make_value_impact_graph()
-    else:
-        fig = go.Figure()  # blank graph fallback
-    
-    return fig
-'''
 
 def get_yahoo_data(tickers):
     t = Ticker(tickers)
