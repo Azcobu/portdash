@@ -1,5 +1,6 @@
 import csv
 import os
+from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime
 import dash
@@ -35,8 +36,8 @@ def load_portfolio():
     if os.name == 'nt':
         portfile = r'n:\portfolio.csv'
     else:
-        portfile = r'~/sambashare/portfolio.csv'
-    
+        portfile = Path.home() / 'sambashare' / 'portfolio.csv'
+
     with open(portfile, 'r', encoding='utf-8') as infile:
         reader = csv.DictReader(infile)
         for row in reader:
@@ -381,4 +382,5 @@ load_portfolio()
 #refresh_data(None)
 
 if __name__ == "__main__":
-    app.run(debug=False, port=8050)
+    #app.run(debug=False, port=8050)
+    app.run(host='0.0.0.0', port=8050)
