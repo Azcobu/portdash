@@ -2,6 +2,8 @@ import csv
 from nicegui import events, ui
 from dataclasses import dataclass, asdict
 from yahooquery import Ticker as Ticker
+import plotly.graph_objects as go
+import plotly.express as px
 
 ui.dark_mode().value = True
 
@@ -18,15 +20,17 @@ class Holding:
     total_change_dollars: float = 0
 
 # fake data for testing
+'''
 portfolio = [
     Holding('A200', 256, 43222, 132.62, 31, 0.53, 234, -4.12, -1342.88),
     Holding('BGBL', 1542, 93222, 73.12, 55, -0.16, -323, 6.23, 7342.89),
     Holding('VGE', 121, 11642, 73.27, 8, 0.62, -117.32, 2.74, 228.32),
     Holding('VISM', 82, 5254, 81.62, 6, 0, 0, 9.86, 512.14),
 ]
-
+'''
 portfolio = []
 summary_data = Holding(ticker="Total...")
+ui_refs = {}
 
 def load_portfolio():
     # returns a dict with current portfolio holdings and weights from a csv with following format:
@@ -99,7 +103,7 @@ def format_change(pct: float, dollars: float) -> str:
     sign = '+' if dollars > 0 else '-' if dollars < 0 else ''
     return f'{arrow} {pct:.2f}% ({sign}${abs(dollars):,.2f})'
 
-def get_total_row(data: list[Holding]) -> dict:
+def get_total_row() -> dict:
     return {
         'ticker': 'Total:',
         'weight': 100, #sum(h.weight for h in data),
@@ -111,8 +115,82 @@ def get_total_row(data: list[Holding]) -> dict:
 
 def refresh_data():
     print('Refreshing data.')
-    fetch_etf_data()
-    grid.update(rows=calc_table_data())
+
+    button = ui_refs['refresh_button']
+    button.props(add='loading')
+    button.disable()
+
+    try:
+        fetch_etf_data()
+        grid = ui_refs['grid']
+        grid.options['rowData'] = calc_table_data()
+        grid.options['pinnedBottomRowData'] = [get_total_row()]
+        grid.update()
+        new_fig = make_impact_graph()
+        ui_refs['plot'].figure = new_fig
+    except Exception as err:
+        print(f'Error updating data: {err}')
+    finally:
+        button.props(remove='loading')
+        button.enable()
+
+def make_weights_treemap():
+    tickers = [etf.ticker for etf in portfolio]
+    weights = [etf.weight for etf in portfolio]
+    #colors
+    #labels = [f'{ticker} - {weight}' for ticker, weight in zip(tickers, weights)]
+
+    data = {'Ticker': tickers, 'Weight': weights}
+    figure = px.treemap(data, path=["Ticker"], values="Weight", title="ETF Portfolio Weights")
+    return figure
+
+def make_impact_graph():
+    # Build bar chart of weighted impact
+
+    tickers = [etf.ticker for etf in portfolio]
+    impacts = [etf.daily_change_pct * etf.weight for etf in portfolio]  # in %
+    colors = ["green" if val > 0 else "red" if val < 0 else "white" for val in impacts]
+    labels = [f"{val:+.2f}%" for val in impacts]
+
+    figure = {
+        "data": [
+            {
+                "x": tickers,
+                "y": impacts,
+                "type": "bar",
+                "text": labels,
+                "textposition": "auto",
+                "marker": {"color": colors},
+            }
+        ],
+        "layout": {
+            "plot_bgcolor": "#222",
+            "paper_bgcolor": "#222",
+            "font": {"color": "#ccc"},
+            "title": {"text": "Daily Portfolio Impact by ETF", "font": {"size": 20}},
+            "yaxis": {"title": "Impact (%)"},
+        },
+    }
+    return figure
+
+def generate_figure(graph_type: str):
+    if graph_type == "Daily % Impact by ETF":
+        return make_impact_graph()
+    elif graph_type == "ETF Portfolio Weights":
+        return make_weights_treemap()
+    elif graph_type == "Total $ Impact by ETF":
+        return px.bar(x=["A", "B", "C"], y=[10, 20, 15], title="Total $ Impact")
+    else:
+        return px.line(x=[1, 2, 3], y=[1, 4, 9], title="Value Over Time")
+
+def update_plot(event=None):
+    graph_type = ui_refs['dropdown'].value
+    print(f'Updating graph to {graph_type}')
+    fig = generate_figure(graph_type)
+    
+    ui_refs['plot'].delete()
+    with ui_refs['plot_container']:
+        ui_refs['plot'] = ui.plotly(fig)
 
 ui.add_head_html('''
 <style>
@@ -159,34 +237,48 @@ def main():
     </style>
     ''')
 
-    with ui.column().classes('items-start p-4 w-1/2'):  # LEFT-align contents to avoid full stretch
-        ui.label('ETF Performance:')
-        
-        grid = ui.aggrid({
-                'columnDefs': [
-                    {'headerName': 'Ticker', 'field': 'ticker', 'width': 50},
-                    {'headerName': 'Daily', 'field': 'daily_change_pct', 'width': 100,
-                    'valueFormatter': "data.daily_display",
-                    'cellClassRules': {
-                        "text-green-500": "x > 0",
-                        "text-red-500": "x < 0",
-                        "text-white": "x === 0",
-                        }
-                    },
-                    {'headerName': 'Total', 'field': 'total_change_pct', 'width': 100,
-                    'valueFormatter': "data.total_display",
-                    'cellClassRules': {
-                        'text-green-500': 'x > 0',
-                        'text-red-500': 'x < 0',
-                        'text-white': 'x === 0',
-                    }},
-                    {'headerName': 'Weight', 'field': 'weight', 'width': 50}],
-                'rowData': calc_table_data(),
-                'pinnedBottomRowData': [get_total_row(portfolio)],
-                'domLayout': 'autoHeight',
-            }).classes('ag-theme-balham-dark max-w-screen-md mx-auto text-lg')
+    with ui.row().classes('w-full'):
+        with ui.column().classes('items-start p-4 w-1/2 box-border'):  # LEFT-align contents to avoid full stretch
+            ui.label('ETF Performance:')
+            
+            ui_refs['grid'] = ui.aggrid({
+                    'columnDefs': [
+                        {'headerName': 'Ticker', 'field': 'ticker', 'width': 50},
+                        {'headerName': 'Daily', 'field': 'daily_change_pct', 'width': 100,
+                        'valueFormatter': "data.daily_display",
+                        'cellClassRules': {
+                            "text-green-500": "x > 0",
+                            "text-red-500": "x < 0",
+                            "text-white": "x === 0",
+                            }
+                        },
+                        {'headerName': 'Total', 'field': 'total_change_pct', 'width': 100,
+                        'valueFormatter': "data.total_display",
+                        'cellClassRules': {
+                            'text-green-500': 'x > 0',
+                            'text-red-500': 'x < 0',
+                            'text-white': 'x === 0',
+                        }},
+                        {'headerName': 'Weight', 'field': 'weight', 'width': 50}],
+                    'rowData': calc_table_data(),
+                    'pinnedBottomRowData': [get_total_row()],
+                    'domLayout': 'autoHeight',
+                }).classes('ag-theme-balham-dark max-w-screen-md mx-auto text-lg')
 
-        ui.button('Refresh', on_click=refresh_data).classes('mt-4')
+            ui_refs['refresh_button'] = ui.button('Refresh', on_click=refresh_data, icon='refresh')
 
+
+        # right column
+        with ui.column().classes('w-1/3'):
+            ui_refs['dropdown'] = ui.select(
+                ["Daily % Impact by ETF", "ETF Portfolio Weights","Total $ Impact by ETF", "Total Value Over Time"],
+                value="Daily % Impact by ETF", on_change=update_plot, label='Select graph type:')
+            #ui_refs['plot'] = ui.plotly(make_impact_graph())
+            ui_refs['plot_container'] = ui.column()
+            with ui_refs['plot_container']:
+                ui_refs['plot'] = ui.plotly(generate_figure("Daily % Impact by ETF"))
+
+                              
+            
 
 ui.run()
