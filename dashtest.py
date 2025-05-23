@@ -5,6 +5,7 @@ import dash
 from dash import html, dcc, Output, Input, callback_context
 import plotly.graph_objs as go
 from yahooquery import Ticker as Ticker
+import plotly.express as px
 
 app = dash.Dash(__name__)
 
@@ -103,12 +104,13 @@ app.layout = html.Div(
                             placeholder="Select a graph type...",
                             options=[
                                 {"label": "Daily % Impact by ETF", "value": "daily-impact"},
+                                {"label": "Total Holdings by Weight", "value": "weights"},
                                 {"label": "Total Value Over Time", "value": "history"},
-                                {"label": "Total $ Impact by ETF", "value": "value_impact"},
+                                {"label": "Total % Impact by ETF", "value": "total-impact"},
                             ],
                             value="daily-impact",
                             clearable=False,
-                            style={"backgroundColor": "#222", "color": "#ccc", "marginBottom": "1rem"}
+                            style={"backgroundColor": "#222", "color": "#ccc", "marginBottom": "1rem"},
                         ),
                         dcc.Graph(id="etf-graph", style={"backgroundColor": "#222", "color": "#ccc"})
                     ],
@@ -220,7 +222,6 @@ def fetch_etf_data():
     summary_data.daily_change_pct = (summary_data.daily_change_val / overall_total_value) * 100
     summary_data.total_change_pct = (summary_data.total_change_val / overall_total_paid) * 100
 
-
 @app.callback(
     Output("status-line", "children"),
     Output("etf-container", "children"),
@@ -250,13 +251,16 @@ def unified_callback(n_clicks, n_intervals, graph_mode):
             figure = make_impact_graph()
 
     elif trigger_id == "graph-selector":
+        print(f'Changing graph type to {graph_mode}')
         # Don’t refetch data — just render new graph mode
         if graph_mode == "daily-impact":
             figure = make_impact_graph()
+        elif graph_mode == 'weights':
+            figure = make_weights_treemap()
         elif graph_mode == "cumulative":
             figure = make_cumulative_graph()
-        elif graph_mode == "value-over-time":
-            figure = make_impact_graph()
+        elif graph_mode == "total-impact":
+            figure = make_impact_graph('total')
         # add other graph modes here
 
     # Update status line
@@ -268,10 +272,17 @@ def unified_callback(n_clicks, n_intervals, graph_mode):
     etf_boxes = [generate_etf_header()] + [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
     return status_text, etf_boxes, figure
 
-def make_impact_graph():
+def make_impact_graph(graph_type='daily'):
     # Build bar chart of weighted impact
     tickers = [etf.ticker for etf in portfolio]
-    impacts = [etf.daily_change_pct * etf.weight for etf in portfolio]  # in %
+
+    if graph_type == 'daily':
+        impacts = [etf.daily_change_pct * etf.weight for etf in portfolio]  # in %
+        title = "Daily Portfolio Impact by ETF"
+    elif graph_type == 'total':
+        impacts = [etf.total_change_pct * etf.weight for etf in portfolio]  # in %
+        title = "Total Portfolio Impact by ETF"
+
     colors = ["green" if val > 0 else "red" if val < 0 else "white" for val in impacts]
     labels = [f"{val:+.2f}%" for val in impacts]
 
@@ -290,10 +301,33 @@ def make_impact_graph():
             "plot_bgcolor": "#222",
             "paper_bgcolor": "#222",
             "font": {"color": "#ccc"},
-            "title": {"text": "Daily Portfolio Impact by ETF", "font": {"size": 20}},
+            "title": {"text": title, "font": {"size": 20}},
             "yaxis": {"title": "Impact (%)"},
         },
     }
+    return figure
+
+def make_weights_treemap():
+    tickers = [etf.ticker for etf in portfolio]
+    weights = [etf.weight for etf in portfolio]
+
+    data = {'Ticker': tickers, 'Weight': weights}
+    figure = px.treemap(data, path=["Ticker"], values="Weight", custom_data=["Ticker", "Weight"], 
+                        title="ETF Portfolio Weights")
+
+    figure.update_traces(
+        texttemplate="%{customdata[0]}<br>%{customdata[1]:.1%}",  # Custom text
+        textfont=dict(color="black", size=16),
+        marker=dict(cornerradius=10)  # Optional styling
+    )
+
+    figure.update_layout(
+        plot_bgcolor="#222",  # Inside the plot area
+        paper_bgcolor="#222",  # Outside the plot area (like the margin)
+        font=dict(color="#ccc"),  # All text (title, labels, etc.)
+        margin = dict(t=35, l=10, r=10, b=10)
+    )
+
     return figure
 
 def get_yahoo_data(tickers):

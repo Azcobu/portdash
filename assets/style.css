@@ -3,5 +3,57 @@ html, body {
     padding: 0;
     background-color: #111111;
     color: #dddddd;
-    font-family: Arial, sans-serif;
+    font-family: Calibri, sans-serif;
+}
+
+.Select-menu-outer {
+    background-color: #222 !important;
+    color: #ccc !important;
+    border: 1px solid #444 !important;
+}
+
+.Select-option {
+    background-color: #222 !important;
+    color: #ccc !important;
+}
+
+.Select-option.is-focused {
+    background-color: #444 !important;
+    color: #fff !important;
+}
+
+.Select-control {
+    background-color: #222 !important;
+    color: #ccc !important;
+    border: 1px solid #444 !important;
+}
+
+.Select--single > .Select-control .Select-value {
+    color: #ccc !important;
+}
+
+.Select-placeholder {
+    color: #888 !important;
+}
+
+/* Style the selected value text */
+.Select-value,
+.Select-value-label,
+.Select-single-value {
+    color: #ccc !important;
+}
+
+/* Fallbacks for newer Dash versions / React-Select changes */
+.Select__single-value {
+    color: #ccc !important;
+}
+
+/* Also ensure placeholder text is readable */
+.Select-placeholder {
+    color: #888 !important;
+}
+
+/* Optional: fix input text if dropdown is searchable */
+.Select-input > input {
+    color: #ccc !important;
 }
