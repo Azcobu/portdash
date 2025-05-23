@@ -1,4 +1,5 @@
 import csv
+import os
 from dataclasses import dataclass
 from datetime import datetime
 import dash
@@ -30,8 +31,13 @@ def load_portfolio():
     # returns a dict with current portfolio holdings and weights from a csv with following format:
     # Ticker,Units,TotalPaid,Issuer,HoldingsFile
     global portfolio
+
+    if os.name == 'nt':
+        portfile = r'n:\portfolio.csv'
+    else:
+        portfile = r'~/sambashare/portfolio.csv'
     
-    with open(r'd:\tmp\portfolio.csv', 'r', encoding='utf-8') as infile:
+    with open(portfile, 'r', encoding='utf-8') as infile:
         reader = csv.DictReader(infile)
         for row in reader:
             portfolio.append(Holding(
