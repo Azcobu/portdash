@@ -70,11 +70,6 @@ def generate_etf_header():
             html.Div("Daily", style={"fontWeight": "bold"}),
             html.Div("Total", style={"fontWeight": "bold"})
         ],
-        style={
-            "justifyContent": "space-between",
-            "borderBottom": "2px solid #ccc",
-            "color": "#ccc"
-        }
     )
 
 def generate_etf_row(etf):
@@ -88,7 +83,7 @@ def generate_etf_row(etf):
     )
 
 app.layout = html.Div(
-    style={"backgroundColor": "#111", "color": "#DDD", "padding": "2rem", "fontFamily": "Tahoma"},
+    className='main-body',
     children=[
         dcc.Interval(id="startup-trigger", interval=1*1000, n_intervals=0, max_intervals=1),
         html.Div(
@@ -97,15 +92,7 @@ app.layout = html.Div(
                 # Left column with ETF boxes
                 html.Div(
                     id="etf-container",
-                    style={
-                        "flex": "1",
-                        "display": "flex",
-                        "flexDirection": "column",
-                        #"align-items": "flex-start",
-                        "gap": "1rem",
-                        "marginRight": "2rem",
-                        "minWidth": "500px"
-                    },
+                    className="etf-container",
                     children=[
                         generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
                 ),
@@ -160,14 +147,14 @@ def fetch_etf_data():
 
     summary_data.daily_change_val = sum(etf.daily_change_val for etf in portfolio) 
     summary_data.total_change_val = sum(etf.total_change_val for etf in portfolio)
+    summary_data.current_value = sum(etf.current_value for etf in portfolio)
     
     overall_total_paid = sum([etf.total_paid for etf in portfolio])
-    overall_total_value = sum([etf.current_value for etf in portfolio])
 
     for etf in portfolio:
-        etf.weight = (etf.current_value / overall_total_value)
+        etf.weight = (etf.current_value / summary_data.current_value)
     
-    summary_data.daily_change_pct = (summary_data.daily_change_val / overall_total_value) * 100
+    summary_data.daily_change_pct = (summary_data.daily_change_val / summary_data.current_value) * 100
     summary_data.total_change_pct = (summary_data.total_change_val / overall_total_paid) * 100
 
 @app.callback(
@@ -254,7 +241,8 @@ def make_weights_treemap():
     figure.update_traces(
         texttemplate="%{customdata[0]}<br>%{customdata[1]:.1%}",  # Custom text
         textfont=dict(color="black", size=16),
-        marker=dict(cornerradius=10)  
+        marker=dict(cornerradius=10),
+        hovertemplate="%{customdata[0]}<br>%{customdata[1]:.1%}"
     )
 
     figure.update_layout(
@@ -289,7 +277,6 @@ def make_top_holdings_graph():
     )
 
     return fig
-
 
 def read_holding_csvs(num_returned=20):
     '''
@@ -367,31 +354,6 @@ def get_yahoo_data(tickers):
     }
 
     return prices
-
-app.index_string = app.index_string.replace(
-    '</head>',
-    '''
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-        .etf-row {
-            display: grid;
-            grid-template-columns: 120px 1fr 1fr;
-            background-color: #222;
-            padding: 0.75rem;
-            border-radius: 8px;
-            font-size: 1.1rem;
-        }
-        .etf-name {
-            font-weight: bold;
-            font-size: 1.1rem;
-        }
-        .etf-daily, .etf-total {
-            text-align: left;
-        }
-    </style>
-    </head>
-    '''
-)
 
 # init
 load_portfolio()
