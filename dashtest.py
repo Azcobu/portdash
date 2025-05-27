@@ -314,7 +314,7 @@ def make_top_countries_graph():
     return fig
 
 def make_top_sectors_graph():
-    top_sectors = read_holding_csvs('sectors', 12)
+    top_sectors = read_holding_csvs('sectors', 11)
     sectors, weights = zip(*top_sectors)
     # add spacing to name to avoid butting up against axis
     sectors = [x + ' ' for x in sectors] 
@@ -367,21 +367,20 @@ def translate_sector(sector):
                'Beverages': 'Consumer Staples', 'Electricity': 'Utilities',
                'Pharmaceuticals & Biotechnology': 'Healthcare',
                "Real Estate Management & Development": 'Real Estate',
-               'Aerospace & Defense': 'Industrials',
+               'Aerospace & Defense': 'Industrials', 'Oil, Gas & Coal': 'Energy',
                '"Health Care Equipment & Supplies"': 'Healthcare',
                "Diversified Telecommunication Services": 'Communication Services',
-               'Finance & Credit Services': 'Financials', 
+               'Finance & Credit Services': 'Financials', 'Chemicals': 'Materials',
                'Food Producers': 'Consumer Staples', 'Machinery': 'Industrials',
                'Industrial Transportation': 'Industrials',
                'Construction & Materials': 'Industrials',
                "Personal Care, Drug & Grocery Stores": 'Consumer Staples',
                "Real Estate Investment & Services": 'Real Estate',
                "Investment Banking & Brokerage Services": 'Financials',
-               'Health Care Providers': 'Healthcare',
+               'Health Care Providers': 'Healthcare', 'General Industrials': 'Industrials',
                'Electronic & Electrical Equipment': 'Industrials',
-               
-            
-
+               'Non-life Insurance': 'Financials', 'Personal Goods': 'Consumer Staples',
+               'Media': 'Communication Services', 'Consumer Services': 'Consumer Staples',
     }
     return sectors.get(sector, sector)
 
