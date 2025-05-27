@@ -109,6 +109,8 @@ app.layout = html.Div(
                                 {"label": "Total % Impact by ETF", "value": "total-impact"},
                                 {"label": "Total Holdings by Weight", "value": "weights"},
                                 {"label": "Top Individual Holdings", "value": "top-holdings"},
+                                {"label": "Top Individual Countries", "value": "top-countries"},
+                                {"label": "Top Individual Sectors", "value": "top-sectors"},
                                 {"label": "Total Value Over Time", "value": "history"},
                                 
                             ],
@@ -190,6 +192,10 @@ def handle_all(n_clicks, n_intervals, graph_mode):
             graph = dcc.Graph(figure=make_weights_treemap())
         elif graph_mode == "top-holdings":
             graph = dcc.Graph(figure=make_top_holdings_graph())
+        elif graph_mode == "top-countries":
+            graph = dcc.Graph(figure=make_top_countries_graph())
+        elif graph_mode == "top-sectors":
+            graph = dcc.Graph(figure=make_top_sectors_graph())
         elif graph_mode == "cumulative":
             graph = dcc.Graph(figure=make_cumulative_graph())
 
@@ -255,8 +261,9 @@ def make_weights_treemap():
     return figure
 
 def make_top_holdings_graph():
-    top_holdings = read_holding_csvs(25)
+    top_holdings = read_holding_csvs('holdings', 25)
     holdings, weights = zip(*top_holdings)
+    holdings = [x + ' ' for x in holdings]
 
     fig = go.Figure(go.Bar(
     x=weights,
@@ -273,12 +280,113 @@ def make_top_holdings_graph():
             autorange='reversed',
             ticklabelposition="outside",
             automargin=True
+        )
     )
-    )
-
     return fig
 
-def read_holding_csvs(num_returned=20):
+def make_top_countries_graph():
+    top_countries = read_holding_csvs('countries', 20)
+    countries, weights = zip(*top_countries)
+    emerging_markets = ['Hong Kong', 'India', 'Taiwan', 'Brazil', 'Saudi Arabia', 'South Africa']
+    bar_colours =  ['#EF553B' if c in emerging_markets else '#636EFA' for c in countries]
+    # add spacing to name to avoid butting up against axis
+    countries = [x + ' ' for x in countries] 
+
+    fig = go.Figure(go.Bar(
+    x=weights,
+    y=countries,
+    orientation='h',  # 'h' for horizontal bars
+    marker=dict(color=bar_colours)
+    ))
+
+    fig.update_layout(
+        plot_bgcolor="#222",  # Inside the plot area
+        paper_bgcolor="#222",  # Outside the plot area (like the margin)
+        font=dict(color="#ccc"),  # All text (title, labels, etc.)
+        margin = dict(t=35, l=100, r=10, b=10),
+        yaxis=dict(
+            autorange='reversed',
+            ticklabelposition="outside",
+            ticklen=10,
+            automargin=True
+        )
+    )
+    return fig
+
+def make_top_sectors_graph():
+    top_sectors = read_holding_csvs('sectors', 12)
+    sectors, weights = zip(*top_sectors)
+    # add spacing to name to avoid butting up against axis
+    sectors = [x + ' ' for x in sectors] 
+
+    fig = go.Figure(go.Bar(
+    x=weights,
+    y=sectors,
+    orientation='h',  # 'h' for horizontal bars
+    ))
+
+    fig.update_layout(
+        plot_bgcolor="#222",  # Inside the plot area
+        paper_bgcolor="#222",  # Outside the plot area (like the margin)
+        font=dict(color="#ccc"),  # All text (title, labels, etc.)
+        margin = dict(t=35, l=100, r=10, b=10),
+        yaxis=dict(
+            autorange='reversed',
+            ticklabelposition="outside",
+            ticklen=10,
+            automargin=True
+        )
+    )
+    return fig
+
+def translate_country_code(code):
+    codes = {'HK': 'Hong Kong', 'IN': 'India', 'TW': 'Taiwan', 'US': 'United States',
+             'SA': 'Saudi Arabia', 'BR': 'Brazil', 'MX': 'Mexico', 'CA': 'Canada', 
+             'ZA': 'South Africa', 'DE': 'Germany', 'FR': 'France', 'ES': 'Spain',
+             'GB': 'United Kingdom', 'IT': 'Italy', 'NL': 'Netherlands', 'BE': 'Belgium',
+             'AU': 'Australia', 'AT': 'Austria', 'CH': 'Switzerland', 'SE': 'Sweden',
+             'NO': 'Norway', 'DK': 'Denmark', 'FI': 'Finland', 'IE': 'Ireland',
+             'PT': 'Portugal', 'GR': 'Greece', 'CY': 'Cyprus', 'IL': 'Israel',
+             'SG': 'Singapore', 'MY': 'Malaysia', 'PH': 'Philippines', 'ID': 'Indonesia', 
+    }
+    return codes.get(code, code)
+
+def translate_sector(sector):
+    sectors = {'Consumer Staples Distribution & Retail': 'Consumer Staples',
+               "Health Care Providers & Services": 'Healthcare',
+               "Software & Computer Services": 'Information Technology',
+               'Banks': 'Financials', "Technology Hardware & Equipment": 'Information Technology',
+               "Telecommunications Service Providers": 'Communication Services',
+               "Precious Metals & Mining": 'Materials',  'Retailers': 'Consumer Discretionary',
+               "Leisure Goods": 'Consumer Discretionary', "Travel & Leisure": 'Consumer Discretionary',
+               "Industrial Metals & Mining": 'Materials', 'Software': 'Information Technology',
+               "Textiles, Apparel & Luxury Goods": 'Consumer Discretionary',
+               "Construction & Engineering": 'Industrials', 'Insurance': 'Financials',
+               'Life Insurance': 'Financials', 'Metals & Mining': 'Materials',
+               'Telecommunications Equipment': 'Communication Services',
+               'Beverages': 'Consumer Staples', 'Electricity': 'Utilities',
+               'Pharmaceuticals & Biotechnology': 'Healthcare',
+               "Real Estate Management & Development": 'Real Estate',
+               'Aerospace & Defense': 'Industrials',
+               '"Health Care Equipment & Supplies"': 'Healthcare',
+               "Diversified Telecommunication Services": 'Communication Services',
+               'Finance & Credit Services': 'Financials', 
+               'Food Producers': 'Consumer Staples', 'Machinery': 'Industrials',
+               'Industrial Transportation': 'Industrials',
+               'Construction & Materials': 'Industrials',
+               "Personal Care, Drug & Grocery Stores": 'Consumer Staples',
+               "Real Estate Investment & Services": 'Real Estate',
+               "Investment Banking & Brokerage Services": 'Financials',
+               'Health Care Providers': 'Healthcare',
+               'Electronic & Electrical Equipment': 'Industrials',
+               
+            
+
+    }
+    return sectors.get(sector, sector)
+
+def read_holding_csvs(mode, num_returned=20):
+    # mode determines returned data - can be holdings, countries or sectors
     '''
     betashares header:
     Ticker,Name,Asset Class,Sector,Country,Currency,Weight (%),Shares/Units (#),Market Value (AUD),Notional Value (AUD)
@@ -287,6 +395,7 @@ def read_holding_csvs(num_returned=20):
     '''
     #etd, stock name, weight, sector, country
     etfs, names, weights = [], [], []
+    countries, sectors = {}, {}
 
     # this is the number of lines to skip at the top of each file
     skiprows = {'betashares': 6, 'vanguard': 3}
@@ -319,6 +428,8 @@ def read_holding_csvs(num_returned=20):
                                 currnames.append(holdname) 
                                 wght = round(float(row['Weight (%)'])  * port_weights[p.name], 2)
                                 weights.append(wght)
+                                countries[row['Country']] = countries.get(row['Country'], 0) + wght
+                                sectors[row['Sector']] = sectors.get(row['Sector'], 0) + wght
                                 #ticker = normalize_ticker(row['Ticker'], None, source='betashares')
                     except Exception as err:
                         print(f'{row} - {err}')
@@ -329,14 +440,28 @@ def read_holding_csvs(num_returned=20):
                             currnames.append(row['Holding Name'])
                             wght = round(float(row['% of net assets'][:-1])  * port_weights[p.name], 2)
                             weights.append(wght)
+                            country = translate_country_code(row['Country code'])
+                            countries[country] = countries.get(country, 0) + wght
+                            sector = translate_sector(row['Sector'])
+                            sectors[sector] = sectors.get(sector, 0) + wght
                     except Exception as err:
                         print(f'{row} - {err}')
 
         #etfs += [etf_name] * len(currnames)
         names += currnames
 
-    combined = list(zip(names, weights))
-    combined = sorted(combined, key=lambda x: x[1], reverse=True)
+    if mode == 'holdings':
+        combined = list(zip(names, weights))
+        combined = sorted(combined, key=lambda x: x[1], reverse=True)
+    elif mode == 'countries':
+        countries = {k: v for k, v in sorted(countries.items(), key=lambda item: item[1], reverse=True)}
+        country, weights = list(countries.keys()), list(countries.values())
+        combined = list(zip(country, weights))
+    elif mode == 'sectors':
+        sectors = {k: v for k, v in sorted(sectors.items(), key=lambda item: item[1], reverse=True)}
+        sectors, weights = list(sectors.keys()), list(sectors.values())
+        combined = list(zip(sectors, weights))
+
     return combined[:num_returned]
 
 def get_yahoo_data(tickers):
@@ -363,4 +488,4 @@ load_portfolio()
 
 if __name__ == "__main__":
     #app.run(debug=False, port=8050)
-    app.run(host='0.0.0.0', port=8050)
+    app.run(host='0.0.0.0', port=8050, debug=True)
