@@ -111,6 +111,7 @@ app.layout = html.Div(
                                 {"label": "Top Individual Holdings", "value": "top-holdings"},
                                 {"label": "Top Individual Countries", "value": "top-countries"},
                                 {"label": "Top Individual Sectors", "value": "top-sectors"},
+                                {"label": "ETF Comparative Efficiency", "value": "efficiency"},
                                 {"label": "Total Value Over Time", "value": "history"},
                                 
                             ],
@@ -149,6 +150,7 @@ def fetch_etf_data():
 
     summary_data.daily_change_val = sum(etf.daily_change_val for etf in portfolio) 
     summary_data.total_change_val = sum(etf.total_change_val for etf in portfolio)
+    summary_data.total_paid = sum(etf.total_paid for etf in portfolio)
     summary_data.current_value = sum(etf.current_value for etf in portfolio)
     
     overall_total_paid = sum([etf.total_paid for etf in portfolio])
@@ -196,6 +198,8 @@ def handle_all(n_clicks, n_intervals, graph_mode):
             graph = dcc.Graph(figure=make_top_countries_graph())
         elif graph_mode == "top-sectors":
             graph = dcc.Graph(figure=make_top_sectors_graph())
+        elif graph_mode == "efficiency":
+            graph = dcc.Graph(figure=make_efficiency_graph())
         elif graph_mode == "cumulative":
             graph = dcc.Graph(figure=make_cumulative_graph())
 
@@ -338,6 +342,40 @@ def make_top_sectors_graph():
         )
     )
     return fig
+    
+def make_efficiency_graph():
+    perfs = {}
+
+    for p in portfolio:
+        contribution_pct = p.total_change_val / summary_data.total_change_val * 100
+        original_weight_pct = p.total_paid / summary_data.total_paid * 100
+        perf_ratio = contribution_pct / original_weight_pct
+        perfs[p.name] = perf_ratio
+
+    perfs = sorted(perfs.items(), key=lambda x: x[1], reverse=True)
+    etfs = [x[0] + '  ' for x in perfs]
+    perf = [x[1] for x in perfs]
+
+    fig = go.Figure(go.Bar(
+    x=perf,
+    y=etfs,
+    orientation='h',  # 'h' for horizontal bars
+    ))
+
+    fig.update_layout(
+        plot_bgcolor="#222",  # Inside the plot area
+        paper_bgcolor="#222",  # Outside the plot area (like the margin)
+        font=dict(color="#ccc"),  # All text (title, labels, etc.)
+        margin = dict(t=35, l=100, r=10, b=10),
+        yaxis=dict(
+            autorange='reversed',
+            ticklabelposition="outside",
+            ticklen=10,
+            automargin=True
+        )
+    )
+    return fig
+
 
 def translate_country_code(code):
     codes = {'HK': 'Hong Kong', 'IN': 'India', 'TW': 'Taiwan', 'US': 'United States',
