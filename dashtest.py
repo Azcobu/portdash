@@ -43,7 +43,7 @@ def load_portfolio():
     else:
         portfile = linuxfilepath / 'portfolio.csv'
 
-    with open(portfile, 'r', encoding='utf-8') as infile:
+    with open(portfile, 'r', encoding='utf-8', errors='replace') as infile:
         reader = csv.DictReader(infile)
         for row in reader:
             portfolio.append(Holding(
@@ -449,7 +449,7 @@ def read_holding_csvs(mode, num_returned=20):
         else:
             filepath = linuxfilepath / p.holdings_file
 
-        with open(filepath, 'r', encoding='utf-8') as infile:
+        with open(filepath, 'r', encoding='cp1252') as infile:
             for _ in range(skiprows[p.issuer]):
                 next(infile)
             
