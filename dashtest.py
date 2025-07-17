@@ -65,7 +65,7 @@ def format_change(pct, val):
     sign = "▲" if val > 0 else "▼" if val < 0 else ""
     color = "springgreen" if val > 0 else "tomato" if val < 0 else "white"
     symbol = '+' if val > 0 else '-' if val < 0 else ''
-    text = f"{sign} {pct:.2f}% ({symbol}${val:,.2f})"
+    text = f"{sign}{pct:.2f}% ({symbol}${val:,.2f})"
     return html.Span(text, style={"color": color})
 
 def generate_etf_header():
@@ -73,8 +73,8 @@ def generate_etf_header():
         className="etf-row",
         children=[
             html.Div("Ticker", style={"fontWeight": "bold"}),
-            html.Div("Daily", style={"fontWeight": "bold"}),
-            html.Div("All Time", style={"fontWeight": "bold"}),
+            html.Div("Daily CG", style={"fontWeight": "bold"}),
+            html.Div("All Time CG", style={"fontWeight": "bold"}),
             html.Div("Dividends", style={"fontWeight": "bold"}),
             html.Div("Total", style={"fontWeight": "bold"})
         ],
@@ -166,7 +166,7 @@ def fetch_etf_data():
     summary_data.total_paid = sum(etf.total_paid for etf in portfolio)
     summary_data.current_value = sum(etf.current_value for etf in portfolio)
     summary_data.div_val = sum(etf.div_val for etf in portfolio)
-    summary_data.div_pct = summary_data.div_val / summary_data.total_paid
+    summary_data.div_pct = summary_data.div_val / summary_data.total_paid * 100
     summary_data.grand_total_val = summary_data.total_change_val + summary_data.div_val
     
     overall_total_paid = sum([etf.total_paid for etf in portfolio])
@@ -364,7 +364,7 @@ def make_efficiency_graph():
     perfs = {}
 
     for p in portfolio:
-        contribution_pct = p.total_change_val / summary_data.total_change_val * 100
+        contribution_pct = p.grand_total_val / summary_data.grand_total_val * 100
         original_weight_pct = p.total_paid / summary_data.total_paid * 100
         perf_ratio = contribution_pct / original_weight_pct
         perfs[p.name] = perf_ratio
