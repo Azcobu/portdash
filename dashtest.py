@@ -24,10 +24,15 @@ class Holding:
     daily_change_val: float = 0
     total_change_pct: float = 0
     total_change_val: float = 0
+    div_pct: float = 0
+    div_val: float = 0
+    grand_total_pct: float = 0
+    grand_total_val: float = 0
     holdings_file: str = None
 
 # ETF data
 portfolio = []
+# summary_data holds the overall totals across the entire portfolio
 summary_data = Holding(ticker="Total...")
 
 # File paths
@@ -51,6 +56,7 @@ def load_portfolio():
                 name=row['Ticker'],
                 units=int(row['Units']),
                 total_paid=float(row['TotalPaid']),
+                div_val=float(row['Dividends']),
                 issuer=row['Issuer'],
                 holdings_file=row['HoldingsFile']
             ))
@@ -68,6 +74,8 @@ def generate_etf_header():
         children=[
             html.Div("Ticker", style={"fontWeight": "bold"}),
             html.Div("Daily", style={"fontWeight": "bold"}),
+            html.Div("All Time", style={"fontWeight": "bold"}),
+            html.Div("Dividends", style={"fontWeight": "bold"}),
             html.Div("Total", style={"fontWeight": "bold"})
         ],
     )
@@ -77,8 +85,10 @@ def generate_etf_row(etf):
         className="etf-row",
         children=[
             html.Div(etf.ticker[:-3] + ':', className="etf-name"),
-            html.Div(format_change(etf.daily_change_pct, etf.daily_change_val), className="etf-daily"),
-            html.Div(format_change(etf.total_change_pct, etf.total_change_val), className="etf-total"),
+            html.Div(format_change(etf.daily_change_pct, etf.daily_change_val), className="etf-dailycg"),
+            html.Div(format_change(etf.total_change_pct, etf.total_change_val), className="etf-totalcg"),
+            html.Div(format_change(etf.div_pct, etf.div_val), className="etf-div"),
+            html.Div(format_change(etf.grand_total_pct, etf.grand_total_val), className="etf-grandtotal"),
         ],
     )
 
@@ -147,11 +157,17 @@ def fetch_etf_data():
         etf.current_value = curr_prices[etf.ticker]["price"] * etf.units
         etf.total_change_pct = (etf.current_value - etf.total_paid) / etf.total_paid * 100
         etf.total_change_val = etf.current_value - etf.total_paid
+        etf.div_pct = etf.div_val / etf.total_paid * 100
+        etf.grand_total_val = etf.total_change_val + etf.div_val
+        etf.grand_total_pct = (etf.current_value + etf.div_val - etf.total_paid) / etf.total_paid * 100
 
     summary_data.daily_change_val = sum(etf.daily_change_val for etf in portfolio) 
     summary_data.total_change_val = sum(etf.total_change_val for etf in portfolio)
     summary_data.total_paid = sum(etf.total_paid for etf in portfolio)
     summary_data.current_value = sum(etf.current_value for etf in portfolio)
+    summary_data.div_val = sum(etf.div_val for etf in portfolio)
+    summary_data.div_pct = summary_data.div_val / summary_data.total_paid
+    summary_data.grand_total_val = summary_data.total_change_val + summary_data.div_val
     
     overall_total_paid = sum([etf.total_paid for etf in portfolio])
 
@@ -160,6 +176,7 @@ def fetch_etf_data():
     
     summary_data.daily_change_pct = (summary_data.daily_change_val / summary_data.current_value) * 100
     summary_data.total_change_pct = (summary_data.total_change_val / overall_total_paid) * 100
+    summary_data.grand_total_pct = (summary_data.grand_total_val / overall_total_paid) * 100
 
 @app.callback(
     Output("status-line", "children"),
@@ -525,4 +542,4 @@ load_portfolio()
 
 if __name__ == "__main__":
     #app.run(debug=False, port=8050)
-    app.run(host='0.0.0.0', port=8050, debug=True)
+    app.run(host='127.0.0.1', port=8050, debug=True)
