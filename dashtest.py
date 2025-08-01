@@ -42,6 +42,8 @@ linuxfilepath = Path.home() / 'sambashare'
 def load_portfolio():
     # returns a dict with current portfolio holdings and weights from a csv with following format:
     # Ticker,Units,TotalPaid,Issuer,HoldingsFile
+    global portfolio
+    portfolio = []
 
     if os.name == 'nt':
         portfile = winfilepath + 'portfolio.csv'
@@ -147,7 +149,6 @@ app.layout = html.Div(
 )
 
 def fetch_etf_data():
-
     print('Updating ETF data.')
     curr_prices = get_yahoo_data([etf.ticker for etf in portfolio])
 
@@ -168,15 +169,13 @@ def fetch_etf_data():
     summary_data.div_val = sum(etf.div_val for etf in portfolio)
     summary_data.div_pct = summary_data.div_val / summary_data.total_paid * 100
     summary_data.grand_total_val = summary_data.total_change_val + summary_data.div_val
-    
-    overall_total_paid = sum([etf.total_paid for etf in portfolio])
 
     for etf in portfolio:
         etf.weight = (etf.current_value / summary_data.current_value)
     
     summary_data.daily_change_pct = (summary_data.daily_change_val / summary_data.current_value) * 100
-    summary_data.total_change_pct = (summary_data.total_change_val / overall_total_paid) * 100
-    summary_data.grand_total_pct = (summary_data.grand_total_val / overall_total_paid) * 100
+    summary_data.total_change_pct = (summary_data.total_change_val / summary_data.total_paid) * 100
+    summary_data.grand_total_pct = (summary_data.grand_total_val / summary_data.total_paid) * 100
 
 @app.callback(
     Output("status-line", "children"),
@@ -196,6 +195,7 @@ def handle_all(n_clicks, n_intervals, graph_mode):
     graph = dash.no_update
 
     if triggered in ["refresh-button", "startup-trigger"]:
+        load_portfolio()
         fetch_etf_data()
         status = f"Last refreshed at {datetime.now().strftime('%I:%M:%S %p').lstrip('0')}"
         container = [generate_etf_header()] + [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
@@ -230,7 +230,7 @@ def make_impact_graph(graph_type='daily'):
         impacts = [etf.daily_change_pct * etf.weight for etf in portfolio]  # in %
         title = "Daily Portfolio Impact by ETF"
     elif graph_type == 'total':
-        impacts = [etf.total_change_pct * etf.weight for etf in portfolio]  # in %
+        impacts = [etf.grand_total_pct * etf.weight for etf in portfolio] # in %
         title = "Total Portfolio Impact by ETF"
 
     colors = ["green" if val > 0 else "red" if val < 0 else "white" for val in impacts]
