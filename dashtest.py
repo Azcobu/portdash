@@ -543,4 +543,8 @@ load_portfolio()
 
 if __name__ == "__main__":
     #app.run(debug=False, port=8050)
-    app.run(host='127.0.0.1', port=8050, debug=True)
+    if os.name == 'nt':
+        hostaddr = '127.0.0.1'
+    else:
+        hostaddr = '0.0.0.0'
+    app.run(host=hostaddr, port=8050, debug=True)
