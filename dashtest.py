@@ -67,6 +67,7 @@ def format_change(pct, val):
     sign = "▲" if val > 0 else "▼" if val < 0 else ""
     color = "springgreen" if val > 0 else "tomato" if val < 0 else "white"
     symbol = '+' if val > 0 else '-' if val < 0 else ''
+    val = abs(val)
     text = f"{sign}{pct:.2f}% ({symbol}${val:,.2f})"
     return html.Span(text, style={"color": color})
 
