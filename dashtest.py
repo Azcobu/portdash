@@ -37,7 +37,8 @@ summary_data = Holding(ticker="Total...")
 
 # File paths
 winfilepath = r'n:\\'
-linuxfilepath = Path.home() / 'sambashare'
+#linuxfilepath = Path.home() / 'sambashare'
+linuxfilepath = '/home/blw/code/portdash/'
 
 def load_portfolio():
     # returns a dict with current portfolio holdings and weights from a csv with following format:
@@ -48,20 +49,23 @@ def load_portfolio():
     if os.name == 'nt':
         portfile = winfilepath + 'portfolio.csv'
     else:
-        portfile = linuxfilepath / 'portfolio.csv'
+        portfile = linuxfilepath + 'portfolio.csv'
 
     with open(portfile, 'r', encoding='utf-8', errors='replace') as infile:
         reader = csv.DictReader(infile)
         for row in reader:
-            portfolio.append(Holding(
-                ticker=row['Ticker'],
-                name=row['Ticker'],
-                units=int(row['Units']),
-                total_paid=float(row['TotalPaid']),
-                div_val=float(row['Dividends']),
-                issuer=row['Issuer'],
-                holdings_file=row['HoldingsFile']
-            ))
+            try:
+                portfolio.append(Holding(
+                    ticker=row['Ticker'],
+                    name=row['Ticker'],
+                    units=int(row['Units']),
+                    total_paid=float(row['TotalPaid']),
+                    div_val=float(row['Dividends']),
+                    issuer=row['Issuer'],
+                    holdings_file=row['HoldingsFile']
+                ))
+            except (KeyError, ValueError) as err:
+                print(f"Skipping malformed portfolio row {row}: {err}")
 
 def format_change(pct, val):
     sign = "▲" if val > 0 else "▼" if val < 0 else ""
@@ -87,7 +91,7 @@ def generate_etf_row(etf):
     return html.Div(
         className="etf-row",
         children=[
-            html.Div(etf.ticker[:-3] + ':', className="etf-name"),
+            html.Div(etf.ticker.split('.')[0] + ':', className="etf-name"),
             html.Div(format_change(etf.daily_change_pct, etf.daily_change_val), className="etf-dailycg"),
             html.Div(format_change(etf.total_change_pct, etf.total_change_val), className="etf-totalcg"),
             html.Div(format_change(etf.div_pct, etf.div_val), className="etf-div"),
@@ -154,29 +158,38 @@ def fetch_etf_data():
     curr_prices = get_yahoo_data([etf.ticker for etf in portfolio])
 
     for etf in portfolio:
-        etf.daily_change_pct = curr_prices[etf.ticker]["daily_change_pct"] * 100
-        etf.daily_change_val = etf.units * (curr_prices[etf.ticker]["price"] - curr_prices[etf.ticker]['yesterday_price'])
-        etf.current_value = curr_prices[etf.ticker]["price"] * etf.units
-        etf.total_change_pct = (etf.current_value - etf.total_paid) / etf.total_paid * 100
+        if etf.ticker not in curr_prices:
+            print(f"Warning: no price data for {etf.ticker}, skipping")
+            continue
+        price_data = curr_prices[etf.ticker]
+        price = price_data.get('price') or 0
+        yesterday_price = price_data.get('yesterday_price') or 0
+        etf.daily_change_pct = (price_data.get('daily_change_pct') or 0) * 100
+        etf.daily_change_val = etf.units * (price - yesterday_price)
+        etf.current_value = price * etf.units
         etf.total_change_val = etf.current_value - etf.total_paid
-        etf.div_pct = etf.div_val / etf.total_paid * 100
         etf.grand_total_val = etf.total_change_val + etf.div_val
-        etf.grand_total_pct = (etf.current_value + etf.div_val - etf.total_paid) / etf.total_paid * 100
+        if etf.total_paid != 0:
+            etf.total_change_pct = etf.total_change_val / etf.total_paid * 100
+            etf.div_pct = etf.div_val / etf.total_paid * 100
+            etf.grand_total_pct = (etf.current_value + etf.div_val - etf.total_paid) / etf.total_paid * 100
 
-    summary_data.daily_change_val = sum(etf.daily_change_val for etf in portfolio) 
+    summary_data.daily_change_val = sum(etf.daily_change_val for etf in portfolio)
     summary_data.total_change_val = sum(etf.total_change_val for etf in portfolio)
     summary_data.total_paid = sum(etf.total_paid for etf in portfolio)
     summary_data.current_value = sum(etf.current_value for etf in portfolio)
     summary_data.div_val = sum(etf.div_val for etf in portfolio)
-    summary_data.div_pct = summary_data.div_val / summary_data.total_paid * 100
     summary_data.grand_total_val = summary_data.total_change_val + summary_data.div_val
 
-    for etf in portfolio:
-        etf.weight = (etf.current_value / summary_data.current_value)
-    
-    summary_data.daily_change_pct = (summary_data.daily_change_val / summary_data.current_value) * 100
-    summary_data.total_change_pct = (summary_data.total_change_val / summary_data.total_paid) * 100
-    summary_data.grand_total_pct = (summary_data.grand_total_val / summary_data.total_paid) * 100
+    if summary_data.current_value != 0:
+        for etf in portfolio:
+            etf.weight = etf.current_value / summary_data.current_value
+        summary_data.daily_change_pct = (summary_data.daily_change_val / summary_data.current_value) * 100
+
+    if summary_data.total_paid != 0:
+        summary_data.div_pct = summary_data.div_val / summary_data.total_paid * 100
+        summary_data.total_change_pct = (summary_data.total_change_val / summary_data.total_paid) * 100
+        summary_data.grand_total_pct = (summary_data.grand_total_val / summary_data.total_paid) * 100
 
 @app.callback(
     Output("status-line", "children"),
@@ -200,10 +213,8 @@ def handle_all(n_clicks, n_intervals, graph_mode):
         fetch_etf_data()
         status = f"Last refreshed at {datetime.now().strftime('%I:%M:%S %p').lstrip('0')}"
         container = [generate_etf_header()] + [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
-        if graph_mode == "daily-impact":
-            graph = dcc.Graph(figure=make_impact_graph())
 
-    elif triggered == "graph-selector":
+    if triggered in ["refresh-button", "startup-trigger", "graph-selector"]:
         if graph_mode == "daily-impact":
             graph = dcc.Graph(figure=make_impact_graph())
         elif graph_mode == "total-impact":
@@ -218,8 +229,6 @@ def handle_all(n_clicks, n_intervals, graph_mode):
             graph = dcc.Graph(figure=make_top_sectors_graph())
         elif graph_mode == "efficiency":
             graph = dcc.Graph(figure=make_efficiency_graph())
-        elif graph_mode == "cumulative":
-            graph = dcc.Graph(figure=make_cumulative_graph())
 
     return status, container, graph
 
@@ -365,8 +374,12 @@ def make_efficiency_graph():
     perfs = {}
 
     for p in portfolio:
+        if summary_data.grand_total_val == 0 or summary_data.total_paid == 0:
+            continue
         contribution_pct = p.grand_total_val / summary_data.grand_total_val * 100
         original_weight_pct = p.total_paid / summary_data.total_paid * 100
+        if original_weight_pct == 0:
+            continue
         perf_ratio = contribution_pct / original_weight_pct
         perfs[p.name] = perf_ratio
 
@@ -455,8 +468,9 @@ def read_holding_csvs(mode, num_returned=20):
     # this is the number of lines to skip at the top of each file
     skiprows = {'betashares': 6, 'vanguard': 3}
 
-    # generate relative weightings for items in the portfolio
-    total = sum([p.weight for p in portfolio])
+    total = sum(p.weight for p in portfolio)
+    if total == 0:
+        return []
     port_weights = {p.ticker: (p.weight / total) for p in portfolio if p.weight > 0}
 
     for p in portfolio:
@@ -481,7 +495,7 @@ def read_holding_csvs(mode, num_returned=20):
                             if row['Name'] != 'AUD - AUSTRALIA DOLLAR':
                                 holdname = f'{row["Name"].title()} ({row["Ticker"]})'
                                 currnames.append(holdname) 
-                                wght = round(float(row['Weight (%)'])  * port_weights[p.name], 2)
+                                wght = round(float(row['Weight (%)'])  * port_weights[p.ticker], 2)
                                 weights.append(wght)
                                 countries[row['Country']] = countries.get(row['Country'], 0) + wght
                                 sectors[row['Sector']] = sectors.get(row['Sector'], 0) + wght
@@ -493,7 +507,7 @@ def read_holding_csvs(mode, num_returned=20):
                     try:
                         if row['Holding Name'] and row['% of net assets']:
                             currnames.append(row['Holding Name'])
-                            wght = round(float(row['% of net assets'][:-1])  * port_weights[p.name], 2)
+                            wght = round(float(row['% of net assets'][:-1])  * port_weights[p.ticker], 2)
                             weights.append(wght)
                             country = translate_country_code(row['Country code'])
                             countries[country] = countries.get(country, 0) + wght
