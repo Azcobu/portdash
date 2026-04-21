@@ -67,6 +67,44 @@ html, body {
     color: #ccc !important;
 }
 
+/* Dash 4.x native dropdown */
+.dash-dropdown-content,
+.dash-dropdown-options,
+.dash-dropdown-wrapper {
+    background-color: #222 !important;
+    border: 1px solid #444 !important;
+    color: #ccc !important;
+}
+
+.dash-dropdown-option {
+    background-color: #222 !important;
+    color: #ccc !important;
+}
+
+.dash-dropdown-option:hover,
+.dash-dropdown-option:focus {
+    background-color: #444 !important;
+    color: #fff !important;
+}
+
+.dash-dropdown-value,
+.dash-dropdown-placeholder {
+    color: #ccc !important;
+}
+
+.dash-dropdown-trigger,
+.dash-dropdown-grid-container {
+    background-color: #222 !important;
+    border-color: #444 !important;
+    color: #ccc !important;
+}
+
+.dash-dropdown-search {
+    background-color: #333 !important;
+    color: #ccc !important;
+    border-color: #444 !important;
+}
+
 /* Default (desktop) */
 .etf-container {
     display: flex;

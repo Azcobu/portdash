@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import pandas as pd
 from pathlib import Path
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
@@ -44,6 +45,52 @@ HISTORY_CHUNKS = 10
 
 def get_cache_path():
     return DATA_DIR + 'history_cache.json'
+
+def load_price_cache():
+    try:
+        with open(DATA_DIR + 'price_cache.json', 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_price_cache(prices):
+    tmp = DATA_DIR + 'price_cache.json.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(prices, f)
+    os.replace(tmp, DATA_DIR + 'price_cache.json')
+
+def apply_price_cache():
+    prices = load_price_cache()
+    if not prices:
+        return
+    for etf in portfolio:
+        if etf.ticker not in prices:
+            continue
+        p = prices[etf.ticker]
+        etf.daily_change_pct = p.get('daily_change_pct', 0)
+        etf.daily_change_val = p.get('daily_change_val', 0)
+        etf.current_value    = p.get('current_value', 0)
+        etf.total_change_val = etf.current_value - etf.total_paid
+        etf.grand_total_val  = etf.total_change_val + etf.div_val
+        if etf.total_paid:
+            etf.total_change_pct = etf.total_change_val / etf.total_paid * 100
+            etf.div_pct          = etf.div_val / etf.total_paid * 100
+            etf.grand_total_pct  = etf.grand_total_val / etf.total_paid * 100
+    if summary_data.current_value == 0:
+        summary_data.daily_change_val = sum(e.daily_change_val for e in portfolio)
+        summary_data.total_change_val = sum(e.total_change_val for e in portfolio)
+        summary_data.total_paid       = sum(e.total_paid for e in portfolio)
+        summary_data.current_value    = sum(e.current_value for e in portfolio)
+        summary_data.div_val          = sum(e.div_val for e in portfolio)
+        summary_data.grand_total_val  = summary_data.total_change_val + summary_data.div_val
+        if summary_data.current_value:
+            for etf in portfolio:
+                etf.weight = etf.current_value / summary_data.current_value
+            summary_data.daily_change_pct = summary_data.daily_change_val / summary_data.current_value * 100
+        if summary_data.total_paid:
+            summary_data.div_pct         = summary_data.div_val / summary_data.total_paid * 100
+            summary_data.total_change_pct = summary_data.total_change_val / summary_data.total_paid * 100
+            summary_data.grand_total_pct  = summary_data.grand_total_val / summary_data.total_paid * 100
 
 def load_history_cache():
     try:
@@ -454,6 +501,166 @@ def make_cumulative_dividends_graph():
     )
     return fig
 
+def make_avg_cost_graph():
+    portfolio_tickers = {etf.ticker for etf in portfolio}
+    all_purchases = sorted(
+        [t for t in load_purchases() if t['ticker'] in portfolio_tickers],
+        key=lambda t: t['date']
+    )
+    if not all_purchases:
+        fig = go.Figure()
+        fig.update_layout(
+            plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+            title=dict(text="Average Cost Per Unit — no purchases data found", font=dict(size=14)),
+        )
+        return fig
+
+    palette = ['#636EFA', '#EF553B', '#00CC96', '#FECB52', '#AB63FA', '#FFA15A']
+    tickers = sorted({t['ticker'] for t in all_purchases})
+
+    fig = go.Figure()
+    for i, ticker in enumerate(tickers):
+        label = ticker.split('.')[0]
+        cumulative_units = 0
+        cumulative_cost = 0
+        dates, avg_costs = [], []
+        for t in [p for p in all_purchases if p['ticker'] == ticker]:
+            cumulative_units += t['units']
+            cumulative_cost += t['total'] if t['units'] > 0 else -t['total']
+            if cumulative_units > 0:
+                dates.append(t['date'])
+                avg_costs.append(cumulative_cost / cumulative_units)
+        if dates:
+            fig.add_trace(go.Scatter(
+                x=dates, y=avg_costs, name=label,
+                mode='lines+markers', line=dict(color=palette[i % len(palette)], width=2, shape='hv'),
+                marker=dict(size=6),
+                hovertemplate='%{x}<br>$%{y:,.4f}<extra>' + label + '</extra>',
+            ))
+
+    fig.update_layout(
+        plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+        title=dict(text="Average Cost Per Unit by ETF", font=dict(size=20)),
+        yaxis=dict(title="Avg Cost Per Unit (AUD)", tickformat="$,.2f", gridcolor="#444"),
+        xaxis=dict(title="Date", gridcolor="#444"),
+        legend=dict(bgcolor="#333", bordercolor="#555", borderwidth=1),
+        margin=dict(t=50, l=80, r=20, b=50),
+    )
+    return fig
+
+def make_avg_cost_normalised_graph():
+    portfolio_tickers = {etf.ticker for etf in portfolio}
+    all_purchases = sorted(
+        [t for t in load_purchases() if t['ticker'] in portfolio_tickers],
+        key=lambda t: t['date']
+    )
+    if not all_purchases:
+        fig = go.Figure()
+        fig.update_layout(
+            plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+            title=dict(text="Normalised Average Cost — no purchases data found", font=dict(size=14)),
+        )
+        return fig
+
+    palette = ['#636EFA', '#EF553B', '#00CC96', '#FECB52', '#AB63FA', '#FFA15A']
+    tickers = sorted({t['ticker'] for t in all_purchases})
+
+    fig = go.Figure()
+    for i, ticker in enumerate(tickers):
+        label = ticker.split('.')[0]
+        cumulative_units = 0
+        cumulative_cost = 0
+        baseline = None
+        dates, normalised = [], []
+        for t in [p for p in all_purchases if p['ticker'] == ticker]:
+            cumulative_units += t['units']
+            cumulative_cost += t['total'] if t['units'] > 0 else -t['total']
+            if cumulative_units > 0:
+                avg = cumulative_cost / cumulative_units
+                if baseline is None:
+                    baseline = avg
+                dates.append(t['date'])
+                normalised.append(avg / baseline * 100)
+        if dates:
+            fig.add_trace(go.Scatter(
+                x=dates, y=normalised, name=label,
+                mode='lines+markers', line=dict(color=palette[i % len(palette)], width=2, shape='hv'),
+                marker=dict(size=6),
+                hovertemplate='%{x}<br>%{y:.2f}%<extra>' + label + '</extra>',
+            ))
+
+    fig.add_hline(y=100, line=dict(color='#555', width=1, dash='dash'))
+    fig.update_layout(
+        plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+        title=dict(text="Average Cost Per Unit — Normalised to First Purchase", font=dict(size=20)),
+        yaxis=dict(title="Avg Cost (% of first purchase)", ticksuffix="%", gridcolor="#444"),
+        xaxis=dict(title="Date", gridcolor="#444"),
+        legend=dict(bgcolor="#333", bordercolor="#555", borderwidth=1),
+        margin=dict(t=50, l=80, r=20, b=50),
+    )
+    return fig
+
+def make_correlation_heatmap():
+    cache = load_history_cache()
+    tickers = [etf.ticker for etf in portfolio]
+    labels = [t.split('.')[0] for t in tickers]
+
+    # Build price series per ETF
+    price_data = {}
+    for ticker in tickers:
+        prices = cache.get(ticker, {})
+        price_data[ticker] = {d: v for d, v in prices.items() if len(d) == 10}
+
+    # Find dates common to all ETFs
+    common_dates = sorted(
+        set.intersection(*[set(price_data[t].keys()) for t in tickers])
+    )
+
+    if len(common_dates) < 10:
+        fig = go.Figure()
+        fig.update_layout(
+            plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+            title=dict(text="Correlation — insufficient overlapping data, click Refresh", font=dict(size=14)),
+        )
+        return fig
+
+    # Compute daily returns and correlation matrix
+    df = pd.DataFrame(
+        {ticker: [price_data[ticker][d] for d in common_dates] for ticker in tickers},
+        index=common_dates
+    )
+    corr = df.pct_change().dropna().corr()
+    corr.index = labels
+    corr.columns = labels
+
+    z = corr.values.tolist()
+
+    annotations = []
+    for i, row_label in enumerate(labels):
+        for j, col_label in enumerate(labels):
+            val = z[i][j]
+            text_color = 'white' if abs(val) > 0.6 else 'black'
+            annotations.append(dict(
+                x=col_label, y=row_label,
+                text=f"{val:.2f}",
+                font=dict(color=text_color, size=13),
+                showarrow=False,
+            ))
+
+    fig = go.Figure(go.Heatmap(
+        z=z, x=labels, y=labels,
+        colorscale='RdYlGn', zmin=-1, zmax=1,
+        hovertemplate='%{y} / %{x}<br>Correlation: %{z:.2f}<extra></extra>',
+    ))
+    fig.update_layout(
+        plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+        title=dict(text="ETF Return Correlation", font=dict(size=20)),
+        margin=dict(t=50, l=80, r=20, b=50),
+        xaxis=dict(side="bottom"),
+        annotations=annotations,
+    )
+    return fig
+
 def make_drawdown_graph():
     cache = load_history_cache()
     portfolio_tickers = {etf.ticker for etf in portfolio}
@@ -676,7 +883,8 @@ def generate_etf_row(etf):
 app.layout = html.Div(
     className='main-body',
     children=[
-        dcc.Interval(id="startup-trigger", interval=1*1000, n_intervals=0, max_intervals=1),
+        dcc.Interval(id="startup-trigger", interval=100, n_intervals=0, max_intervals=1),
+        dcc.Interval(id="yahoo-refresh", interval=2500, n_intervals=0, max_intervals=1),
         html.Div(
             style={"display": "flex"},
             children=[
@@ -710,6 +918,9 @@ app.layout = html.Div(
                                 {"label": "Drawdown From Peak", "value": "drawdown"},
                                 {"label": "Cumulative Return by ETF", "value": "etf-returns"},
                                 {"label": "Cumulative Dividends", "value": "cumulative-dividends"},
+                                {"label": "Average Cost Per Unit", "value": "avg-cost"},
+                                {"label": "Average Cost Per Unit (Normalised)", "value": "avg-cost-norm"},
+                                {"label": "ETF Return Correlation", "value": "correlation"},
                                 
                             ],
                             value="daily-impact",
@@ -771,31 +982,46 @@ def fetch_etf_data():
         summary_data.total_change_pct = (summary_data.total_change_val / summary_data.total_paid) * 100
         summary_data.grand_total_pct = (summary_data.grand_total_val / summary_data.total_paid) * 100
 
+    save_price_cache({
+        etf.ticker: {
+            'daily_change_pct': etf.daily_change_pct,
+            'daily_change_val': etf.daily_change_val,
+            'current_value':    etf.current_value,
+        }
+        for etf in portfolio
+    })
+
 @app.callback(
     Output("status-line", "children"),
     Output("etf-container", "children"),
     Output("graph-container", "children"),
     Input("refresh-button", "n_clicks"),
     Input("startup-trigger", "n_intervals"),
+    Input("yahoo-refresh", "n_intervals"),
     Input("graph-selector", "value"),
 )
-def handle_all(n_clicks, n_intervals, graph_mode):
+def handle_all(n_clicks, n_startup, n_yahoo, graph_mode):
     triggered = dash.callback_context.triggered_id
     print(f"Triggered by: {triggered}")
 
-    # Defaults
     status = dash.no_update
     container = dash.no_update
     graph = dash.no_update
 
-    if triggered in ["refresh-button", "startup-trigger"]:
+    if triggered == "startup-trigger":
+        load_portfolio()
+        apply_price_cache()
+        status = "Loading live prices…"
+        container = [generate_etf_header()] + [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
+
+    elif triggered in ["refresh-button", "yahoo-refresh"]:
         load_portfolio()
         fetch_etf_data()
         update_history_cache()
         status = f"Last refreshed at {datetime.now().strftime('%I:%M:%S %p').lstrip('0')}"
         container = [generate_etf_header()] + [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
 
-    if triggered in ["refresh-button", "startup-trigger", "graph-selector"]:
+    if triggered in ["refresh-button", "startup-trigger", "yahoo-refresh", "graph-selector"]:
         if graph_mode == "daily-impact":
             graph = dcc.Graph(figure=make_impact_graph())
         elif graph_mode == "total-impact":
@@ -824,6 +1050,12 @@ def handle_all(n_clicks, n_intervals, graph_mode):
             graph = dcc.Graph(figure=make_etf_returns_graph())
         elif graph_mode == "cumulative-dividends":
             graph = dcc.Graph(figure=make_cumulative_dividends_graph())
+        elif graph_mode == "avg-cost":
+            graph = dcc.Graph(figure=make_avg_cost_graph())
+        elif graph_mode == "avg-cost-norm":
+            graph = dcc.Graph(figure=make_avg_cost_normalised_graph())
+        elif graph_mode == "correlation":
+            graph = dcc.Graph(figure=make_correlation_heatmap())
 
     return status, container, graph
 
