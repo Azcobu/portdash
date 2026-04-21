@@ -1,8 +1,9 @@
 import csv
+import json
 import os
 from pathlib import Path
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, date, timedelta
 import dash
 from dash import html, dcc, Output, Input, callback_context
 import plotly.graph_objs as go
@@ -35,37 +36,610 @@ portfolio = []
 # summary_data holds the overall totals across the entire portfolio
 summary_data = Holding(ticker="Total...")
 
-# File paths
-winfilepath = r'n:\\'
-#linuxfilepath = Path.home() / 'sambashare'
-linuxfilepath = '/home/blw/code/portdash/'
+# Data directory: set PORTDASH_DATA env var to override, e.g. a samba mount point
+DATA_DIR = os.environ.get('PORTDASH_DATA', os.path.dirname(os.path.abspath(__file__))) + os.sep
+
+HISTORY_START = "2024-10-31"
+HISTORY_CHUNKS = 10
+
+def get_cache_path():
+    return DATA_DIR + 'history_cache.json'
+
+def load_history_cache():
+    try:
+        with open(get_cache_path(), 'r') as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_history_cache(cache):
+    path = get_cache_path()
+    tmp_path = path + '.tmp'
+    with open(tmp_path, 'w') as f:
+        json.dump(cache, f)
+    os.replace(tmp_path, path)
+
+def _fetch_and_cache(cache, tickers, start_str, end_str):
+    try:
+        hist = Ticker(tickers).history(start=start_str, end=end_str, interval='1d')
+        if isinstance(hist, str) or hist is None or (hasattr(hist, 'empty') and hist.empty):
+            print(f"No history data for {start_str} to {end_str}")
+            return
+        for (symbol, dt), row in hist.iterrows():
+            date_str = str(dt)[:10]
+            cache.setdefault(symbol, {})[date_str] = row['close']
+    except Exception as e:
+        print(f"Error fetching history {start_str}-{end_str}: {e}")
+
+def update_history_cache():
+    if not portfolio:
+        return
+    cache = load_history_cache()
+    meta = cache.setdefault('_meta', {'fetch_chunks_done': 0})
+    tickers = [etf.ticker for etf in portfolio]
+
+    today = date.today()
+    start = date.fromisoformat(HISTORY_START)
+    total_days = (today - start).days
+    chunk_days = max(1, total_days // HISTORY_CHUNKS)
+    chunks_done = meta.get('fetch_chunks_done', 0)
+
+    if chunks_done < HISTORY_CHUNKS:
+        chunk_start = start + timedelta(days=chunks_done * chunk_days)
+        chunk_end = min(start + timedelta(days=(chunks_done + 1) * chunk_days), today)
+        print(f"Fetching history chunk {chunks_done + 1}/{HISTORY_CHUNKS}: {chunk_start} to {chunk_end}")
+        _fetch_and_cache(cache, tickers, chunk_start.isoformat(), chunk_end.isoformat())
+        meta['fetch_chunks_done'] = chunks_done + 1
+
+    trailing_start = (today - timedelta(days=7)).isoformat()
+    print(f"Refreshing trailing week from {trailing_start}")
+    _fetch_and_cache(cache, tickers, trailing_start, today.isoformat())
+
+    save_history_cache(cache)
+
+def _normalise_ticker(raw):
+    raw = raw.strip()
+    if ':' in raw:
+        raw = raw.split(':')[1]
+    if '.' not in raw:
+        raw += '.AX'
+    return raw
+
+def _parse_trade_date(s):
+    s = s.strip()
+    for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y'):
+        try:
+            return datetime.strptime(s[:10], fmt).strftime('%Y-%m-%d')
+        except ValueError:
+            continue
+    raise ValueError(f"Cannot parse date: {s!r}")
+
+def load_purchases():
+    path = DATA_DIR + 'purchases.csv'
+    trades = []
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    ticker = _normalise_ticker(row['Symbol'])
+                    trade_date = _parse_trade_date(row['Closing Time'])
+                    qty = float(row['Qty'])
+                    side = row['Side'].strip().lower()
+                    units = qty if side == 'buy' else -qty
+                    raw_total = str(row.get('Total', '') or '').strip().replace(',', '').replace('$', '')
+                    total = abs(float(raw_total)) if raw_total else 0.0
+                    trades.append({'ticker': ticker, 'date': trade_date, 'units': units, 'total': total})
+                except Exception as e:
+                    print(f"Skipping trade row {row}: {e}")
+    except FileNotFoundError:
+        pass
+    return trades
+
+def load_dividends():
+    dividends = []
+    try:
+        with open(DATA_DIR + 'dividends.csv', 'r', encoding='utf-8', errors='replace') as f:
+            for row in csv.DictReader(f):
+                try:
+                    dividends.append({
+                        'date': _parse_trade_date(row['Date']),
+                        'ticker': _normalise_ticker(row.get('Ticker', '')),
+                        'amount': float(row['Amount']),
+                    })
+                except Exception as e:
+                    print(f"Skipping dividend row {row}: {e}")
+    except FileNotFoundError:
+        pass
+    return dividends
+
+def make_history_graph():
+    cache = load_history_cache()
+    tickers = [etf.ticker for etf in portfolio]
+    portfolio_tickers = {etf.ticker for etf in portfolio}
+    purchases = [t for t in load_purchases() if t['ticker'] in portfolio_tickers]
+    dividends = load_dividends()
+    use_purchases = bool(purchases)
+
+    all_dates = set()
+    for ticker in tickers:
+        all_dates.update(cache.get(ticker, {}).keys())
+
+    sorted_dates = sorted(d for d in all_dates if len(d) == 10)  # skip _meta key
+
+    points = []
+    for d in sorted_dates:
+        total = 0
+        skip = False
+        for etf in portfolio:
+            if use_purchases:
+                units = sum(t['units'] for t in purchases if t['ticker'] == etf.ticker and t['date'] <= d)
+            else:
+                units = etf.units
+            if units == 0:
+                continue  # not yet purchased, legitimately absent
+            if d not in cache.get(etf.ticker, {}):
+                skip = True  # price missing for a held ETF — drop this date
+                break
+            total += units * cache[etf.ticker][d]
+        if skip or total == 0:
+            continue
+
+        cost_basis = sum(
+            (float(t.get('total', 0)) if t['units'] > 0 else -float(t.get('total', 0)))
+            for t in purchases if t['date'] <= d
+        ) if use_purchases else sum(etf.total_paid for etf in portfolio)
+
+        cumulative_dividends = sum(dv['amount'] for dv in dividends if dv['date'] <= d)
+
+        points.append((d, total, cost_basis, total + cumulative_dividends))
+
+    chunks_done = cache.get('_meta', {}).get('fetch_chunks_done', 0)
+    coverage = f" ({chunks_done}/{HISTORY_CHUNKS} history chunks loaded)" if chunks_done < HISTORY_CHUNKS else ""
+
+    if not points:
+        fig = go.Figure()
+        fig.update_layout(
+            plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+            title=dict(text=f"Total Portfolio Value Over Time — no data yet, click Refresh{coverage}", font=dict(size=14)),
+        )
+        return fig
+
+    dates, totals, costs, total_returns = zip(*points)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=list(dates), y=list(totals), name="Portfolio Value",
+        mode='lines', line=dict(color='#636EFA', width=2),
+        hovertemplate='%{x}<br>$%{y:,.0f}<extra>Portfolio Value</extra>',
+    ))
+    if use_purchases:
+        fig.add_trace(go.Scatter(
+            x=list(dates), y=list(costs), name="Cost Basis",
+            mode='lines', line=dict(color='#888', width=1.5),
+            hovertemplate='%{x}<br>$%{y:,.0f}<extra>Cost Basis</extra>',
+        ))
+    if dividends:
+        fig.add_trace(go.Scatter(
+            x=list(dates), y=list(total_returns), name="Total Return (inc. dividends)",
+            mode='lines', line=dict(color='#00CC96', width=2),
+            hovertemplate='%{x}<br>$%{y:,.0f}<extra>Total Return</extra>',
+        ))
+    fig.update_layout(
+        plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+        title=dict(text=f"Total Portfolio Value Over Time{coverage}", font=dict(size=20)),
+        yaxis=dict(title="Value (AUD)", tickformat="$,.0f", gridcolor="#444"),
+        xaxis=dict(title="Date", gridcolor="#444"),
+        showlegend=False,
+        margin=dict(t=50, l=80, r=20, b=50),
+    )
+    return fig
+
+def make_profit_graph():
+    cache = load_history_cache()
+    portfolio_tickers = {etf.ticker for etf in portfolio}
+    purchases = [t for t in load_purchases() if t['ticker'] in portfolio_tickers]
+    dividends = load_dividends()
+    use_purchases = bool(purchases)
+
+    all_dates = set()
+    for ticker in portfolio_tickers:
+        all_dates.update(cache.get(ticker, {}).keys())
+
+    sorted_dates = sorted(d for d in all_dates if len(d) == 10)
+
+    points = []
+    for d in sorted_dates:
+        total = 0
+        skip = False
+        for etf in portfolio:
+            if use_purchases:
+                units = sum(t['units'] for t in purchases if t['ticker'] == etf.ticker and t['date'] <= d)
+            else:
+                units = etf.units
+            if units == 0:
+                continue
+            if d not in cache.get(etf.ticker, {}):
+                skip = True
+                break
+            total += units * cache[etf.ticker][d]
+        if skip or total == 0:
+            continue
+
+        cost_basis = sum(
+            t['total'] if t['units'] > 0 else -t['total']
+            for t in purchases if t['date'] <= d
+        ) if use_purchases else sum(etf.total_paid for etf in portfolio)
+
+        cumulative_dividends = sum(dv['amount'] for dv in dividends if dv['date'] <= d)
+        profit = total - cost_basis + cumulative_dividends
+        points.append((d, profit))
+
+    chunks_done = cache.get('_meta', {}).get('fetch_chunks_done', 0)
+    coverage = f" ({chunks_done}/{HISTORY_CHUNKS} history chunks loaded)" if chunks_done < HISTORY_CHUNKS else ""
+
+    if not points:
+        fig = go.Figure()
+        fig.update_layout(
+            plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+            title=dict(text=f"Portfolio Profit Over Time — no data yet, click Refresh{coverage}", font=dict(size=14)),
+        )
+        return fig
+
+    dates, profits = zip(*points)
+    profit_by_date = dict(zip(dates, profits))
+
+    fig = go.Figure(go.Scatter(
+        x=list(dates), y=list(profits),
+        mode='lines', line=dict(color='#00CC96', width=2),
+        fill='tozeroy',
+        fillcolor='rgba(0,204,150,0.15)',
+        hovertemplate='%{x}<br>$%{y:,.0f}<extra>Profit</extra>',
+    ))
+
+    # Group purchases by date for investment markers
+    if use_purchases:
+        buys_by_date = {}
+        for t in purchases:
+            if t['units'] > 0:
+                buys_by_date.setdefault(t['date'], []).append(
+                    f"{t['ticker'].split('.')[0]}: ${t['total']:,.0f}"
+                )
+        marker_dates, marker_profits, marker_labels = [], [], []
+        for d, labels in sorted(buys_by_date.items()):
+            if d in profit_by_date:
+                marker_dates.append(d)
+                marker_profits.append(profit_by_date[d])
+                marker_labels.append('<br>'.join(labels))
+        if marker_dates:
+            fig.add_trace(go.Scatter(
+                x=marker_dates, y=marker_profits,
+                mode='markers',
+                marker=dict(color='yellow', size=8, symbol='circle',
+                            line=dict(color='#333', width=1)),
+                hovertemplate='%{x}<br>%{customdata}<extra>Investment</extra>',
+                customdata=marker_labels,
+            ))
+
+    fig.add_hline(y=0, line=dict(color='#555', width=1))
+    fig.update_layout(
+        plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+        title=dict(text=f"Portfolio Profit Over Time{coverage}", font=dict(size=20)),
+        yaxis=dict(title="Profit (AUD)", tickformat="$,.0f", gridcolor="#444"),
+        xaxis=dict(title="Date", gridcolor="#444"),
+        showlegend=False,
+        margin=dict(t=50, l=80, r=20, b=50),
+    )
+    return fig
+
+def make_etf_returns_graph():
+    cache = load_history_cache()
+    portfolio_tickers = {etf.ticker for etf in portfolio}
+    all_purchases = [t for t in load_purchases() if t['ticker'] in portfolio_tickers]
+    use_purchases = bool(all_purchases)
+    palette = ['#636EFA', '#EF553B', '#00CC96', '#FECB52', '#AB63FA', '#FFA15A']
+
+    all_dates = set()
+    for ticker in portfolio_tickers:
+        all_dates.update(cache.get(ticker, {}).keys())
+    sorted_dates = sorted(d for d in all_dates if len(d) == 10)
+
+    chunks_done = cache.get('_meta', {}).get('fetch_chunks_done', 0)
+    coverage = f" ({chunks_done}/{HISTORY_CHUNKS} history chunks loaded)" if chunks_done < HISTORY_CHUNKS else ""
+
+    fig = go.Figure()
+    for i, etf in enumerate(portfolio):
+        etf_purchases = [t for t in all_purchases if t['ticker'] == etf.ticker]
+        points = []
+        for d in sorted_dates:
+            if use_purchases:
+                units = sum(t['units'] for t in etf_purchases if t['date'] <= d)
+                cost_basis = sum(
+                    t['total'] if t['units'] > 0 else -t['total']
+                    for t in etf_purchases if t['date'] <= d
+                )
+            else:
+                units = etf.units
+                cost_basis = etf.total_paid
+            if units == 0 or cost_basis == 0:
+                continue
+            if d not in cache.get(etf.ticker, {}):
+                continue
+            value = units * cache[etf.ticker][d]
+            points.append((d, (value - cost_basis) / cost_basis * 100))
+
+        if points:
+            dates, returns = zip(*points)
+            label = etf.ticker.split('.')[0]
+            fig.add_trace(go.Scatter(
+                x=list(dates), y=list(returns),
+                mode='lines', name=label,
+                line=dict(color=palette[i % len(palette)], width=2),
+                hovertemplate='%{x}<br>%{y:.2f}%<extra>' + label + '</extra>',
+            ))
+
+    fig.add_hline(y=0, line=dict(color='#555', width=1))
+    fig.update_layout(
+        plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+        title=dict(text=f"Cumulative Return by ETF{coverage}", font=dict(size=20)),
+        yaxis=dict(title="Return (%)", gridcolor="#444", ticksuffix="%"),
+        xaxis=dict(title="Date", gridcolor="#444"),
+        legend=dict(bgcolor="#333", bordercolor="#555", borderwidth=1),
+        margin=dict(t=50, l=80, r=20, b=50),
+    )
+    return fig
+
+def make_cumulative_dividends_graph():
+    portfolio_tickers = {etf.ticker for etf in portfolio}
+    dividends = sorted(
+        [d for d in load_dividends() if d['ticker'] in portfolio_tickers],
+        key=lambda d: d['date']
+    )
+    if not dividends:
+        fig = go.Figure()
+        fig.update_layout(
+            plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+            title=dict(text="Cumulative Dividends — no data found", font=dict(size=14)),
+        )
+        return fig
+
+    palette = ['#636EFA', '#EF553B', '#00CC96', '#FECB52', '#AB63FA', '#FFA15A']
+    tickers = sorted({d['ticker'] for d in dividends})
+    all_dates = sorted({d['date'] for d in dividends})
+
+    fig = go.Figure()
+    running_total = []
+    portfolio_cumulative = 0
+
+    for i, ticker in enumerate(tickers):
+        label = ticker.split('.')[0]
+        cumulative = 0
+        dates, amounts = [], []
+        for d in all_dates:
+            payment = sum(dv['amount'] for dv in dividends if dv['ticker'] == ticker and dv['date'] == d)
+            if payment:
+                cumulative += payment
+                dates.append(d)
+                amounts.append(cumulative)
+        if dates:
+            fig.add_trace(go.Scatter(
+                x=dates, y=amounts, name=label,
+                mode='lines+markers', line=dict(color=palette[i % len(palette)], width=2, shape='hv'),
+                marker=dict(size=6),
+                hovertemplate='%{x}<br>$%{y:,.2f}<extra>' + label + '</extra>',
+            ))
+
+    # Portfolio total line
+    cumulative = 0
+    dates, amounts = [], []
+    for d in all_dates:
+        payment = sum(dv['amount'] for dv in dividends if dv['date'] == d)
+        if payment:
+            cumulative += payment
+            dates.append(d)
+            amounts.append(cumulative)
+    fig.add_trace(go.Scatter(
+        x=dates, y=amounts, name="Total",
+        mode='lines+markers', line=dict(color='white', width=2, dash='dot', shape='hv'),
+        marker=dict(size=6),
+        hovertemplate='%{x}<br>$%{y:,.2f}<extra>Total</extra>',
+    ))
+
+    fig.update_layout(
+        plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+        title=dict(text="Cumulative Dividends Received", font=dict(size=20)),
+        yaxis=dict(title="Cumulative Amount (AUD)", tickformat="$,.0f", gridcolor="#444"),
+        xaxis=dict(title="Date", gridcolor="#444"),
+        legend=dict(bgcolor="#333", bordercolor="#555", borderwidth=1),
+        margin=dict(t=50, l=80, r=20, b=50),
+    )
+    return fig
+
+def make_drawdown_graph():
+    cache = load_history_cache()
+    portfolio_tickers = {etf.ticker for etf in portfolio}
+    purchases = [t for t in load_purchases() if t['ticker'] in portfolio_tickers]
+    use_purchases = bool(purchases)
+
+    all_dates = set()
+    for ticker in portfolio_tickers:
+        all_dates.update(cache.get(ticker, {}).keys())
+
+    sorted_dates = sorted(d for d in all_dates if len(d) == 10)
+
+    points = []
+    for d in sorted_dates:
+        total = 0
+        skip = False
+        for etf in portfolio:
+            units = sum(t['units'] for t in purchases if t['ticker'] == etf.ticker and t['date'] <= d) if use_purchases else etf.units
+            if units == 0:
+                continue
+            if d not in cache.get(etf.ticker, {}):
+                skip = True
+                break
+            total += units * cache[etf.ticker][d]
+        if not skip and total > 0:
+            points.append((d, total))
+
+    chunks_done = cache.get('_meta', {}).get('fetch_chunks_done', 0)
+    coverage = f" ({chunks_done}/{HISTORY_CHUNKS} history chunks loaded)" if chunks_done < HISTORY_CHUNKS else ""
+
+    if not points:
+        fig = go.Figure()
+        fig.update_layout(
+            plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+            title=dict(text=f"Drawdown — no data yet, click Refresh{coverage}", font=dict(size=14)),
+        )
+        return fig
+
+    dates, values = zip(*points)
+    peak = 0
+    drawdowns = []
+    for v in values:
+        peak = max(peak, v)
+        drawdowns.append((v - peak) / peak * 100)
+
+    fig = go.Figure(go.Scatter(
+        x=list(dates), y=drawdowns,
+        mode='lines', line=dict(color='#EF553B', width=2),
+        fill='tozeroy', fillcolor='rgba(239,85,59,0.15)',
+        hovertemplate='%{x}<br>%{y:.2f}%<extra>Drawdown</extra>',
+    ))
+    fig.add_hline(y=0, line=dict(color='#555', width=1))
+    fig.update_layout(
+        plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+        title=dict(text=f"Portfolio Drawdown From Peak{coverage}", font=dict(size=20)),
+        yaxis=dict(title="Drawdown (%)", gridcolor="#444", ticksuffix="%"),
+        xaxis=dict(title="Date", gridcolor="#444"),
+        showlegend=False,
+        margin=dict(t=50, l=80, r=20, b=50),
+    )
+    return fig
+
+def make_dividend_efficiency_graph():
+    total_divs = summary_data.div_val
+    total_value = summary_data.current_value
+    if total_divs == 0 or total_value == 0:
+        fig = go.Figure()
+        fig.update_layout(
+            plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+            title=dict(text="Dividend Efficiency — no data", font=dict(size=14)),
+        )
+        return fig
+
+    ratios = {}
+    for etf in portfolio:
+        div_contribution_pct = etf.div_val / total_divs * 100
+        weight_pct = etf.current_value / total_value * 100
+        if weight_pct == 0:
+            continue
+        ratios[etf.name] = div_contribution_pct / weight_pct
+
+    ratios = sorted(ratios.items(), key=lambda x: x[1], reverse=True)
+    etfs = [x[0].split('.')[0] + '  ' for x in ratios]
+    vals = [x[1] for x in ratios]
+    colours = ['#00CC96' if v >= 1 else '#EF553B' for v in vals]
+
+    fig = go.Figure(go.Bar(
+        x=vals, y=etfs, orientation='h',
+        marker=dict(color=colours),
+        hovertemplate='%{y}<br>Ratio: %{x:.2f}<extra></extra>',
+    ))
+    fig.add_vline(x=1.0, line=dict(color='#888', width=1, dash='dash'))
+    fig.update_layout(
+        plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+        title=dict(text="Dividend Efficiency by ETF", font=dict(size=20)),
+        xaxis=dict(title="Dividend Contribution / Portfolio Weight", gridcolor="#444"),
+        margin=dict(t=50, l=100, r=20, b=50),
+        yaxis=dict(autorange='reversed', ticklabelposition="outside", ticklen=10, automargin=True),
+    )
+    return fig
+
+def make_dividends_bar_graph():
+    portfolio_tickers = {etf.ticker for etf in portfolio}
+    dividends = [d for d in load_dividends() if d['ticker'] in portfolio_tickers]
+    if not dividends:
+        fig = go.Figure()
+        fig.update_layout(
+            plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+            title=dict(text="Dividend Payments — no data found", font=dict(size=14)),
+        )
+        return fig
+
+    # Group by ticker so each gets its own coloured bar series
+    tickers = sorted({d['ticker'] for d in dividends})
+    all_dates = sorted({d['date'] for d in dividends})
+    palette = ['#636EFA', '#EF553B', '#00CC96', '#FECB52', '#AB63FA', '#FFA15A']
+    ticker_colours = {t: palette[i % len(palette)] for i, t in enumerate(tickers)}
+
+    fig = go.Figure()
+    for ticker in tickers:
+        label = ticker.split('.')[0]
+        amounts = []
+        for d in all_dates:
+            total = sum(dv['amount'] for dv in dividends if dv['ticker'] == ticker and dv['date'] == d)
+            amounts.append(total if total else None)
+        fig.add_trace(go.Bar(
+            x=all_dates, y=amounts, name=label,
+            marker_color=ticker_colours[ticker],
+            hovertemplate='%{x}<br>$%{y:,.2f}<extra>' + label + '</extra>',
+        ))
+
+    fig.update_layout(
+        plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+        title=dict(text="Dividend Payments Over Time", font=dict(size=20)),
+        barmode='stack',
+        yaxis=dict(title="Amount (AUD)", tickformat="$,.0f", gridcolor="#444"),
+        xaxis=dict(title="Date", gridcolor="#444"),
+        legend=dict(bgcolor="#333", bordercolor="#555", borderwidth=1),
+        margin=dict(t=50, l=80, r=20, b=50),
+    )
+    return fig
 
 def load_portfolio():
-    # returns a dict with current portfolio holdings and weights from a csv with following format:
-    # Ticker,Units,TotalPaid,Issuer,HoldingsFile
     global portfolio
     portfolio = []
 
-    if os.name == 'nt':
-        portfile = winfilepath + 'portfolio.csv'
-    else:
-        portfile = linuxfilepath + 'portfolio.csv'
+    # Load static config: ticker → issuer + holdings file
+    config = {}
+    try:
+        with open(DATA_DIR + 'etf_config.csv', 'r', encoding='utf-8', errors='replace') as f:
+            for row in csv.DictReader(f):
+                config[row['Ticker'].strip()] = {
+                    'issuer': row['Issuer'].strip(),
+                    'holdings_file': row['HoldingsFile'].strip(),
+                }
+    except FileNotFoundError:
+        print("etf_config.csv not found")
+        return
 
-    with open(portfile, 'r', encoding='utf-8', errors='replace') as infile:
-        reader = csv.DictReader(infile)
-        for row in reader:
-            try:
-                portfolio.append(Holding(
-                    ticker=row['Ticker'],
-                    name=row['Ticker'],
-                    units=int(row['Units']),
-                    total_paid=float(row['TotalPaid']),
-                    div_val=float(row['Dividends']),
-                    issuer=row['Issuer'],
-                    holdings_file=row['HoldingsFile']
-                ))
-            except (KeyError, ValueError) as err:
-                print(f"Skipping malformed portfolio row {row}: {err}")
+    # Derive units and cost basis from purchases
+    units_by_ticker = {t: 0.0 for t in config}
+    paid_by_ticker  = {t: 0.0 for t in config}
+    for trade in load_purchases():
+        t = trade['ticker']
+        if t not in config:
+            continue
+        units_by_ticker[t] += trade['units']
+        paid_by_ticker[t]  += trade['total'] if trade['units'] > 0 else -trade['total']
+
+    # Derive dividends from dividends.csv
+    div_by_ticker = {t: 0.0 for t in config}
+    for div in load_dividends():
+        t = div['ticker']
+        if t in config:
+            div_by_ticker[t] += div['amount']
+
+    for ticker, cfg in config.items():
+        portfolio.append(Holding(
+            ticker=ticker,
+            name=ticker,
+            units=int(round(units_by_ticker[ticker])),
+            total_paid=paid_by_ticker[ticker],
+            div_val=div_by_ticker[ticker],
+            issuer=cfg['issuer'],
+            holdings_file=cfg['holdings_file'],
+        ))
 
 def format_change(pct, val):
     sign = "▲" if val > 0 else "▼" if val < 0 else ""
@@ -130,6 +704,12 @@ app.layout = html.Div(
                                 {"label": "Top Individual Sectors", "value": "top-sectors"},
                                 {"label": "ETF Comparative Efficiency", "value": "efficiency"},
                                 {"label": "Total Value Over Time", "value": "history"},
+                                {"label": "Profit Over Time", "value": "profit"},
+                                {"label": "Dividend Payments", "value": "dividends-bar"},
+                                {"label": "Dividend Efficiency by ETF", "value": "dividends-efficiency"},
+                                {"label": "Drawdown From Peak", "value": "drawdown"},
+                                {"label": "Cumulative Return by ETF", "value": "etf-returns"},
+                                {"label": "Cumulative Dividends", "value": "cumulative-dividends"},
                                 
                             ],
                             value="daily-impact",
@@ -211,6 +791,7 @@ def handle_all(n_clicks, n_intervals, graph_mode):
     if triggered in ["refresh-button", "startup-trigger"]:
         load_portfolio()
         fetch_etf_data()
+        update_history_cache()
         status = f"Last refreshed at {datetime.now().strftime('%I:%M:%S %p').lstrip('0')}"
         container = [generate_etf_header()] + [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
 
@@ -229,6 +810,20 @@ def handle_all(n_clicks, n_intervals, graph_mode):
             graph = dcc.Graph(figure=make_top_sectors_graph())
         elif graph_mode == "efficiency":
             graph = dcc.Graph(figure=make_efficiency_graph())
+        elif graph_mode == "history":
+            graph = dcc.Graph(figure=make_history_graph())
+        elif graph_mode == "profit":
+            graph = dcc.Graph(figure=make_profit_graph())
+        elif graph_mode == "dividends-bar":
+            graph = dcc.Graph(figure=make_dividends_bar_graph())
+        elif graph_mode == "dividends-efficiency":
+            graph = dcc.Graph(figure=make_dividend_efficiency_graph())
+        elif graph_mode == "drawdown":
+            graph = dcc.Graph(figure=make_drawdown_graph())
+        elif graph_mode == "etf-returns":
+            graph = dcc.Graph(figure=make_etf_returns_graph())
+        elif graph_mode == "cumulative-dividends":
+            graph = dcc.Graph(figure=make_cumulative_dividends_graph())
 
     return status, container, graph
 
@@ -476,10 +1071,7 @@ def read_holding_csvs(mode, num_returned=20):
     for p in portfolio:
 
         # correct paths for Linux vs Windows
-        if os.name == 'nt':
-            filepath = winfilepath + p.holdings_file
-        else:
-            filepath = linuxfilepath / p.holdings_file
+        filepath = DATA_DIR + p.holdings_file
 
         with open(filepath, 'r', encoding='cp1252') as infile:
             for _ in range(skiprows[p.issuer]):
