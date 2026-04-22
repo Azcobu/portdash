@@ -46,6 +46,22 @@ HISTORY_CHUNKS = 10
 def get_cache_path():
     return DATA_DIR + 'history_cache.json'
 
+def should_auto_refresh():
+    if datetime.now().hour < 18:
+        return False
+    try:
+        with open(DATA_DIR + 'auto_refresh.json') as f:
+            last = date.fromisoformat(json.load(f).get('last_date', '2000-01-01'))
+            return last < date.today()
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        return True
+
+def mark_auto_refreshed():
+    tmp = DATA_DIR + 'auto_refresh.json.tmp'
+    with open(tmp, 'w') as f:
+        json.dump({'last_date': date.today().isoformat()}, f)
+    os.replace(tmp, DATA_DIR + 'auto_refresh.json')
+
 def load_price_cache():
     try:
         with open(DATA_DIR + 'price_cache.json', 'r') as f:
@@ -885,8 +901,9 @@ app.layout = html.Div(
     children=[
         dcc.Interval(id="startup-trigger", interval=100, n_intervals=0, max_intervals=1),
         dcc.Interval(id="yahoo-refresh", interval=2500, n_intervals=0, max_intervals=1),
+        dcc.Interval(id="daily-check", interval=60*60*1000),
         html.Div(
-            style={"display": "flex"},
+            className="main-layout",
             children=[
                 # Left column with ETF boxes
                 html.Div(
@@ -998,9 +1015,10 @@ def fetch_etf_data():
     Input("refresh-button", "n_clicks"),
     Input("startup-trigger", "n_intervals"),
     Input("yahoo-refresh", "n_intervals"),
+    Input("daily-check", "n_intervals"),
     Input("graph-selector", "value"),
 )
-def handle_all(n_clicks, n_startup, n_yahoo, graph_mode):
+def handle_all(n_clicks, n_startup, n_yahoo, n_daily, graph_mode):
     triggered = dash.callback_context.triggered_id
     print(f"Triggered by: {triggered}")
 
@@ -1014,6 +1032,16 @@ def handle_all(n_clicks, n_startup, n_yahoo, graph_mode):
         status = "Loading live prices…"
         container = [generate_etf_header()] + [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
 
+    elif triggered == "daily-check":
+        if not should_auto_refresh():
+            return dash.no_update, dash.no_update, dash.no_update
+        load_portfolio()
+        fetch_etf_data()
+        update_history_cache()
+        mark_auto_refreshed()
+        status = f"Auto-refreshed at {datetime.now().strftime('%I:%M:%S %p').lstrip('0')}"
+        container = [generate_etf_header()] + [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
+
     elif triggered in ["refresh-button", "yahoo-refresh"]:
         load_portfolio()
         fetch_etf_data()
@@ -1021,7 +1049,7 @@ def handle_all(n_clicks, n_startup, n_yahoo, graph_mode):
         status = f"Last refreshed at {datetime.now().strftime('%I:%M:%S %p').lstrip('0')}"
         container = [generate_etf_header()] + [generate_etf_row(etf) for etf in portfolio] + [generate_etf_row(summary_data)]
 
-    if triggered in ["refresh-button", "startup-trigger", "yahoo-refresh", "graph-selector"]:
+    if triggered in ["refresh-button", "startup-trigger", "yahoo-refresh", "daily-check", "graph-selector"]:
         if graph_mode == "daily-impact":
             graph = dcc.Graph(figure=make_impact_graph())
         elif graph_mode == "total-impact":
