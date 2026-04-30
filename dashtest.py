@@ -8,8 +8,15 @@ from datetime import datetime, date, timedelta
 import dash
 from dash import html, dcc, Output, Input, callback_context
 import plotly.graph_objs as go
+import plotly.io as pio
 from yahooquery import Ticker as Ticker
 import plotly.express as px
+
+# Apply a consistent hover label style across all figures
+pio.templates["portdash"] = go.layout.Template(
+    layout=dict(hoverlabel=dict(bgcolor='black', font=dict(color='white', size=13)))
+)
+pio.templates.default = "plotly+portdash"
 
 app = dash.Dash(__name__)
 
@@ -616,6 +623,171 @@ def make_avg_cost_normalised_graph():
     )
     return fig
 
+def _compute_daily_pnl():
+    """Returns list of (date_str, pct_change_of_portfolio_value)."""
+    cache = load_history_cache()
+    portfolio_tickers = {etf.ticker for etf in portfolio}
+    purchases = [t for t in load_purchases() if t['ticker'] in portfolio_tickers]
+    dividends = load_dividends()
+    use_purchases = bool(purchases)
+
+    all_dates = set()
+    for ticker in portfolio_tickers:
+        all_dates.update(cache.get(ticker, {}).keys())
+    sorted_dates = sorted(d for d in all_dates if len(d) == 10)
+
+    rows = []  # (date, profit, total_value)
+    for d in sorted_dates:
+        total = 0
+        skip = False
+        for etf in portfolio:
+            units = sum(t['units'] for t in purchases if t['ticker'] == etf.ticker and t['date'] <= d) if use_purchases else etf.units
+            if units == 0:
+                continue
+            if d not in cache.get(etf.ticker, {}):
+                skip = True
+                break
+            total += units * cache[etf.ticker][d]
+        if skip or total == 0:
+            continue
+        cost_basis = sum(
+            t['total'] if t['units'] > 0 else -t['total']
+            for t in purchases if t['date'] <= d
+        ) if use_purchases else sum(etf.total_paid for etf in portfolio)
+        cum_divs = sum(dv['amount'] for dv in dividends if dv['date'] <= d)
+        rows.append((d, total - cost_basis + cum_divs, total))
+
+    out = []
+    for i in range(1, len(rows)):
+        prev_value = rows[i-1][2]
+        if prev_value:
+            pct = (rows[i][1] - rows[i-1][1]) / prev_value * 100
+            out.append((rows[i][0], pct))
+    return out
+
+def _empty_heatmap_fig(title):
+    fig = go.Figure()
+    fig.update_layout(
+        plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+        title=dict(text=title, font=dict(size=14)),
+    )
+    return fig
+
+PNL_COLORSCALE = [
+    [0.0,   '#5a0000'],   # max loss — dark red
+    [0.4,   '#d62728'],   # bright red
+    [0.499, '#ff5555'],   # vivid red just below zero
+    [0.5,   '#444444'],   # zero — dark grey
+    [0.501, '#55dd55'],   # vivid green just above zero
+    [0.6,   '#2ca02c'],   # bright green
+    [1.0,   '#005a00'],   # max gain — dark green
+]
+
+def make_monthly_heatmap():
+    daily = _compute_daily_pnl()
+    if not daily:
+        return _empty_heatmap_fig("Daily Movements (Last Month) — no data, click Refresh")
+
+    cells = {}
+    for d_str, pct in daily:
+        dt = date.fromisoformat(d_str)
+        if dt.weekday() <= 4:
+            cells[dt] = pct
+
+    if not cells:
+        return _empty_heatmap_fig("Daily Movements (Last Month) — no data")
+
+    latest = max(cells.keys())
+    latest_monday = latest - timedelta(days=latest.weekday())
+    mondays = [latest_monday - timedelta(weeks=i) for i in range(3, -1, -1)]
+
+    weekday_labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri']
+    row_labels = [f"w/c {m.strftime('%d %b')}" for m in mondays]
+    z, text_grid, hover_grid = [], [], []
+    for m in mondays:
+        z_row, text_row, hover_row = [], [], []
+        for wd in range(5):
+            d = m + timedelta(days=wd)
+            v = cells.get(d)
+            z_row.append(v)
+            text_row.append(f"{v:+.2f}%" if v is not None else "")
+            hover_row.append(f"{d.strftime('%a %d %b %Y')}<br>{v:+.2f}%" if v is not None else "")
+        z.append(z_row); text_grid.append(text_row); hover_grid.append(hover_row)
+
+    valid = [v for row in z for v in row if v is not None]
+    extreme = max(abs(v) for v in valid) if valid else 1
+
+    fig = go.Figure(go.Heatmap(
+        z=z, x=weekday_labels, y=row_labels,
+        text=text_grid, texttemplate='%{text}',
+        textfont=dict(color='black', size=14, family='Arial Black'),
+        colorscale=PNL_COLORSCALE, zmin=-extreme, zmax=extreme, zmid=0,
+        customdata=hover_grid, hovertemplate='%{customdata}<extra></extra>',
+        xgap=3, ygap=3,
+    ))
+    fig.update_layout(
+        plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+        title=dict(text="Daily Portfolio Movements — Last Month", font=dict(size=20)),
+        margin=dict(t=50, l=120, r=20, b=50),
+        yaxis=dict(autorange='reversed'),
+        hoverlabel=dict(bgcolor='black', font=dict(color='white', size=13)),
+    )
+    return fig
+
+def make_yearly_heatmap():
+    daily = _compute_daily_pnl()
+    if not daily:
+        return _empty_heatmap_fig("Daily Movements (Last Year) — no data, click Refresh")
+
+    cutoff = date.today() - timedelta(days=365)
+    cells = {}
+    for d_str, pct in daily:
+        dt = date.fromisoformat(d_str)
+        if dt.weekday() <= 4 and dt >= cutoff:
+            cells[dt] = pct
+
+    if not cells:
+        return _empty_heatmap_fig("Daily Movements (Last Year) — no data")
+
+    by_month = {}
+    for d, pct in sorted(cells.items()):
+        by_month.setdefault((d.year, d.month), []).append((d, pct))
+
+    sorted_months = sorted(by_month.keys())
+    max_days = max(len(days) for days in by_month.values())
+
+    z, hover, row_labels = [], [], []
+    for (y, m) in sorted_months:
+        days = by_month[(y, m)]
+        row = [None] * max_days
+        hover_row = [''] * max_days
+        for i, (d, pct) in enumerate(days):
+            row[i] = pct
+            hover_row[i] = f"{d.strftime('%a %d %b %Y')}<br>{pct:+.2f}%"
+        z.append(row)
+        hover.append(hover_row)
+        row_labels.append(date(y, m, 1).strftime('%b %Y'))
+
+    valid = [v for row in z for v in row if v is not None]
+    extreme = max(abs(v) for v in valid) if valid else 1
+
+    fig = go.Figure(go.Heatmap(
+        z=z, y=row_labels,
+        x=list(range(1, max_days + 1)),
+        colorscale=PNL_COLORSCALE, zmin=-extreme, zmax=extreme, zmid=0,
+        customdata=hover, hovertemplate='%{customdata}<extra></extra>',
+        xgap=2, ygap=2,
+    ))
+    fig.update_layout(
+        plot_bgcolor="#222", paper_bgcolor="#222", font=dict(color="#ccc"),
+        title=dict(text="Daily Portfolio Movements — Last Year", font=dict(size=20)),
+        margin=dict(t=50, l=80, r=20, b=50),
+        yaxis=dict(autorange='reversed'),
+        xaxis=dict(title="Trading Day of Month", dtick=1),
+        hoverlabel=dict(bgcolor='black', font=dict(color='white', size=13)),
+    )
+    return fig
+
 def make_correlation_heatmap():
     cache = load_history_cache()
     tickers = [etf.ticker for etf in portfolio]
@@ -938,6 +1110,8 @@ app.layout = html.Div(
                                 {"label": "Average Cost Per Unit", "value": "avg-cost"},
                                 {"label": "Average Cost Per Unit (Normalised)", "value": "avg-cost-norm"},
                                 {"label": "ETF Return Correlation", "value": "correlation"},
+                                {"label": "Daily Movements (Last Month)", "value": "monthly-heatmap"},
+                                {"label": "Daily Movements (Last Year)", "value": "yearly-heatmap"},
                                 
                             ],
                             value="daily-impact",
@@ -1084,6 +1258,10 @@ def handle_all(n_clicks, n_startup, n_yahoo, n_daily, graph_mode):
             graph = dcc.Graph(figure=make_avg_cost_normalised_graph())
         elif graph_mode == "correlation":
             graph = dcc.Graph(figure=make_correlation_heatmap())
+        elif graph_mode == "monthly-heatmap":
+            graph = dcc.Graph(figure=make_monthly_heatmap())
+        elif graph_mode == "yearly-heatmap":
+            graph = dcc.Graph(figure=make_yearly_heatmap())
 
     return status, container, graph
 

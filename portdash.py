@@ -191,7 +191,7 @@ def extract_financial_data(portfolio):
                     except Exception as err:
                         print(f'{row} - {err}')
 
-        etfs += [etf_name] * len(currnames)
+        etfs += [p.ticker] * len(currnames)
         names += currnames
 
     combined = list(zip(etfs, names, weights))
